@@ -6,12 +6,7 @@ export function getBackendUrl(): string {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      // Limpiar automáticamente IPs obsoletas que ya no corresponden
-      if (saved.includes('192.168.0.110')) {
-        localStorage.removeItem(STORAGE_KEY);
-      } else {
-        return saved.replace(/\/$/, '');
-      }
+      return saved.replace(/\/$/, '');
     }
   } catch {
     // Ignorar restricciones en navegadores privados

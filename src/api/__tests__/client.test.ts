@@ -25,19 +25,13 @@ describe('API Client Unit Tests', () => {
     });
 
     it('debe guardar y devolver la URL configurada sin barra diagonal final', () => {
-      setBackendUrl('http://192.168.1.100:5000/');
-      expect(getBackendUrl()).toBe('http://192.168.1.100:5000');
-    });
-
-    it('debe depurar y eliminar automáticamente la IP obsoleta 192.168.0.110', () => {
-      localStorage.setItem('pimusic_backend_url', 'http://192.168.0.110:5000');
-      expect(getBackendUrl()).toBe('');
-      expect(localStorage.getItem('pimusic_backend_url')).toBeNull();
+      setBackendUrl('http://api.example.com:5000/');
+      expect(getBackendUrl()).toBe('http://api.example.com:5000');
     });
 
     it('debe limpiar localStorage si se pasa una URL vacía a setBackendUrl', () => {
-      setBackendUrl('http://192.168.1.50:5000');
-      expect(getBackendUrl()).toBe('http://192.168.1.50:5000');
+      setBackendUrl('http://localhost:5000');
+      expect(getBackendUrl()).toBe('http://localhost:5000');
       setBackendUrl('   ');
       expect(getBackendUrl()).toBe('');
     });
