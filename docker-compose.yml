@@ -1,0 +1,13 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+    container_name: pimusic-frontend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:80"
+    environment:
+      - NODE_ENV=production
