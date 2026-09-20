@@ -8,6 +8,7 @@ import {
   updateMediaSessionPositionState,
   clearMediaSessionActionHandlers,
   clearMediaSession,
+  isPictureInPictureSupported,
 } from '../mediaSession';
 
 describe('MediaSession Utility Tests', () => {
@@ -183,6 +184,27 @@ describe('MediaSession Utility Tests', () => {
   describe('isMediaSessionSupported', () => {
     it('debe retornar true cuando navigator.mediaSession está presente', () => {
       expect(isMediaSessionSupported()).toBe(true);
+    });
+  });
+
+  describe('Picture-in-Picture Utility Tests', () => {
+    it('debe detectar soporte de Picture-in-Picture si document.pictureInPictureEnabled está activo', () => {
+      Object.defineProperty(document, 'pictureInPictureEnabled', {
+        value: true,
+        configurable: true,
+      });
+      expect(isPictureInPictureSupported()).toBe(true);
+    });
+
+    it('debe registrar el handler de enterpictureinpicture en setMediaSessionActionHandlers', () => {
+      const onPip = vi.fn();
+      setMediaSessionActionHandlers({
+        enterpictureinpicture: onPip,
+      });
+      expect(navigator.mediaSession.setActionHandler).toHaveBeenCalledWith(
+        'enterpictureinpicture',
+        expect.any(Function)
+      );
     });
   });
 });

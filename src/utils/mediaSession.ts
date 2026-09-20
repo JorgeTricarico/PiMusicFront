@@ -36,6 +36,7 @@ export interface MediaSessionActionHandlers {
   nexttrack?: () => void;
   seekto?: (details: MediaSessionActionDetails) => void;
   stop?: () => void;
+  enterpictureinpicture?: () => void;
 }
 
 export interface MediaSessionPositionState {
@@ -53,6 +54,103 @@ export function isMediaSessionSupported(): boolean {
     'mediaSession' in navigator &&
     Boolean(navigator.mediaSession)
   );
+}
+
+/**
+ * Comprueba si Picture-in-Picture (PiP) está soportado en el navegador actual
+ * (estándar W3C o WebKit/Safari).
+ */
+export function isPictureInPictureSupported(): boolean {
+  if (typeof document !== 'undefined') {
+    if ('pictureInPictureEnabled' in document && Boolean(document.pictureInPictureEnabled)) {
+      return true;
+    }
+  }
+  if (typeof HTMLVideoElement !== 'undefined') {
+    const video = document.createElement('video');
+    if (typeof (video as any).webkitSupportsPresentationMode === 'function') {
+      return (video as any).webkitSupportsPresentationMode('picture-in-picture');
+    }
+  }
+  return false;
+}
+
+/**
+ * Comprueba si autoPictureInPicture es compatible con el navegador actual (Chrome en Android/Desktop).
+ */
+export function isAutoPictureInPictureSupported(): boolean {
+  if (typeof HTMLVideoElement !== 'undefined') {
+    return 'autoPictureInPicture' in HTMLVideoElement.prototype;
+  }
+  return false;
+}
+
+/**
+ * Solicita entrar a Picture-in-Picture de forma segura soportando APIs W3C y WebKit/Safari.
+ */
+export async function requestPictureInPicture(
+  videoElement: HTMLVideoElement
+): Promise<PictureInPictureWindow | null> {
+  if (!videoElement) return null;
+
+  try {
+    if (typeof videoElement.requestPictureInPicture === 'function') {
+      return await videoElement.requestPictureInPicture();
+    }
+    if (
+      typeof (videoElement as any).webkitSetPresentationMode === 'function' &&
+      (videoElement as any).webkitSupportsPresentationMode?.('picture-in-picture')
+    ) {
+      (videoElement as any).webkitSetPresentationMode('picture-in-picture');
+      return null;
+    }
+  } catch (err) {
+    console.warn('Fallo al solicitar Picture-in-Picture:', err);
+    throw err;
+  }
+  return null;
+}
+
+/**
+ * Sale del modo Picture-in-Picture si está activo.
+ */
+export async function exitPictureInPicture(
+  videoElement?: HTMLVideoElement | null
+): Promise<void> {
+  try {
+    if (typeof document !== 'undefined' && document.pictureInPictureElement) {
+      await document.exitPictureInPicture();
+      return;
+    }
+    if (
+      videoElement &&
+      typeof (videoElement as any).webkitSetPresentationMode === 'function'
+    ) {
+      (videoElement as any).webkitSetPresentationMode('inline');
+    }
+  } catch (err) {
+    console.warn('Fallo al salir de Picture-in-Picture:', err);
+    throw err;
+  }
+}
+
+/**
+ * Comprueba si el elemento de video está actualmente en modo Picture-in-Picture.
+ */
+export function isPictureInPictureActive(
+  videoElement?: HTMLVideoElement | null
+): boolean {
+  if (typeof document !== 'undefined' && document.pictureInPictureElement) {
+    if (!videoElement) return true;
+    return document.pictureInPictureElement === videoElement;
+  }
+  if (
+    videoElement &&
+    (videoElement as any).webkitPresentationMode === 'picture-in-picture'
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -125,7 +223,7 @@ export function setMediaSessionActionHandlers(handlers: MediaSessionActionHandle
   if (!isMediaSessionSupported()) return;
 
   const actions: Array<{
-    action: MediaSessionAction;
+    action: MediaSessionAction | 'enterpictureinpicture';
     handler?: (details: any) => void;
   }> = [
     { action: 'play', handler: handlers.play },
@@ -136,16 +234,17 @@ export function setMediaSessionActionHandlers(handlers: MediaSessionActionHandle
     { action: 'nexttrack', handler: handlers.nexttrack },
     { action: 'seekto', handler: handlers.seekto },
     { action: 'stop', handler: handlers.stop },
+    { action: 'enterpictureinpicture' as any, handler: handlers.enterpictureinpicture },
   ];
 
   for (const { action, handler } of actions) {
     try {
       if (handler) {
-        navigator.mediaSession.setActionHandler(action, (details) => {
+        navigator.mediaSession.setActionHandler(action as any, (details) => {
           handler(details);
         });
       } else {
-        navigator.mediaSession.setActionHandler(action, null);
+        navigator.mediaSession.setActionHandler(action as any, null);
       }
     } catch {
       // Ignorar si el navegador no soporta una acción específica
@@ -206,7 +305,7 @@ export function updateMediaSessionPositionState(
 export function clearMediaSessionActionHandlers(): void {
   if (!isMediaSessionSupported()) return;
 
-  const actions: MediaSessionAction[] = [
+  const actions: Array<MediaSessionAction | 'enterpictureinpicture'> = [
     'play',
     'pause',
     'seekbackward',
@@ -215,11 +314,12 @@ export function clearMediaSessionActionHandlers(): void {
     'nexttrack',
     'seekto',
     'stop',
+    'enterpictureinpicture' as any,
   ];
 
   for (const action of actions) {
     try {
-      navigator.mediaSession.setActionHandler(action, null);
+      navigator.mediaSession.setActionHandler(action as any, null);
     } catch {}
   }
 }

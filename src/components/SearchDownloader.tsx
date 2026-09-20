@@ -393,9 +393,9 @@ export const SearchDownloader: React.FC<SearchDownloaderProps> = ({ onPlayPrevie
             </div>
             <FormatCard
               info={selectedVideo}
-              onPlayPreview={(videoId, title, type, quality) => {
+              onPlayPreview={(videoId, title, type, quality, streamUrl, duration) => {
                 setSelectedVideo(null);
-                onPlayPreview(videoId, title, type, quality);
+                onPlayPreview(videoId, title, type, quality, streamUrl, duration);
               }}
             />
           </div>

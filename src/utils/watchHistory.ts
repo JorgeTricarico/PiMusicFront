@@ -174,6 +174,30 @@ export function clearWatchHistory(): void {
 }
 
 /**
+ * Convierte duraciones en formato "mm:ss", "hh:mm:ss" o número a segundos enteros.
+ */
+export function parseDuration(val: string | number | undefined | null): number {
+  if (val === undefined || val === null) return 0;
+  if (typeof val === 'number') return isFinite(val) && val > 0 ? Math.floor(val) : 0;
+  const str = String(val).trim();
+  if (!str) return 0;
+  const num = Number(str);
+  if (!isNaN(num)) return num > 0 ? Math.floor(num) : 0;
+  const parts = str.split(':').map((p) => parseInt(p, 10));
+  if (parts.some((p) => isNaN(p))) return 0;
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+  if (parts.length === 1) {
+    return parts[0];
+  }
+  return 0;
+}
+
+/**
  * Formatea segundos en mm:ss o hh:mm:ss.
  */
 export function formatDuration(secs: number): string {

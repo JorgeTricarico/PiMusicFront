@@ -23,6 +23,7 @@ import { PwaInstallBanner } from './components/PwaInstallBanner';
 import { ClipboardBanner } from './components/ClipboardBanner';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { getTelemetry, saveToServer } from './api/client';
+import { parseDuration } from './utils/watchHistory';
 import { Globe } from 'lucide-react';
 
 function AppContent() {
@@ -113,13 +114,14 @@ function AppContent() {
     type: 'audio' | 'video',
     quality?: QualityId,
     streamUrl?: string,
-    duration?: number
+    duration?: number | string
   ) => {
     setActivePlayer(null);
+    const parsedDur = parseDuration(duration);
     const newTrack: StreamPlayerTrack = {
       videoId,
       title,
-      duration,
+      duration: parsedDur > 0 ? parsedDur : undefined,
       initialType: type,
       initialQuality: quality || (type === 'video' ? '480p' : 'audio'),
       streamUrl,
@@ -162,7 +164,7 @@ function AppContent() {
     quality: QualityId;
     isPlaying: boolean;
   }) => {
-    const currentDur = streamTrack?.duration;
+    const currentDur = streamTrack?.duration ? parseDuration(streamTrack.duration) : undefined;
     setStreamTrack(null);
     setActivePlayer({
       videoId: state.videoId,
@@ -266,7 +268,7 @@ function AppContent() {
           <SearchDownloader onPlayPreview={handlePlayPreview} />
         ) : activeTab === 'foryou' ? (
           <ForYouView
-            onPlayMedia={(track) => handlePlayPreview(track.id, track.title, track.type, track.quality)}
+            onPlayMedia={(track) => handlePlayPreview(track.id, track.title, track.type, track.quality, undefined, track.duration)}
             onOpenDownloadConfirm={(target) => setForyouDownloadTarget(target)}
             onOpenSaveConfirm={(target) => setForyouSaveTarget(target)}
             onOpenAccountModal={() => setIsAccountModalOpen(true)}

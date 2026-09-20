@@ -10,6 +10,7 @@ import {
   updateMediaSessionPositionState,
   clearMediaSession,
 } from '../utils/mediaSession';
+import { parseDuration } from '../utils/watchHistory';
 
 export interface PlayerTrack {
   videoId: string;
@@ -17,7 +18,7 @@ export interface PlayerTrack {
   channel?: string;
   artist?: string;
   type: 'audio' | 'video';
-  duration?: number;
+  duration?: number | string;
   quality?: QualityId;
   currentTime?: number;
   isPlaying?: boolean;
@@ -59,7 +60,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
         quality: nextTrack.initialQuality || '480p',
         currentTime: 0,
         isPlaying: true,
-        duration: nextTrack.duration,
+        duration: nextTrack.duration !== undefined ? parseDuration(nextTrack.duration) : undefined,
         streamUrl: nextTrack.streamUrl,
       });
     }
@@ -75,7 +76,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
         quality: nextTrack.initialQuality || '480p',
         currentTime: 0,
         isPlaying: true,
-        duration: nextTrack.duration,
+        duration: nextTrack.duration !== undefined ? parseDuration(nextTrack.duration) : undefined,
         streamUrl: nextTrack.streamUrl,
       });
     }
@@ -91,7 +92,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
         quality: prevTrack.initialQuality || '480p',
         currentTime: 0,
         isPlaying: true,
-        duration: prevTrack.duration,
+        duration: prevTrack.duration !== undefined ? parseDuration(prevTrack.duration) : undefined,
         streamUrl: prevTrack.streamUrl,
       });
     }

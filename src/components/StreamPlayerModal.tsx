@@ -23,10 +23,11 @@ import {
   SkipBack,
   SkipForward,
   Tv,
-  Keyboard
+  Keyboard,
+  PictureInPicture2
 } from 'lucide-react';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
-import { getStreamMediaUrl, getDownloadUrl } from '../api/client';
+import { getStreamMediaUrl, getDownloadUrl, getVideoInfo } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import { useQueue } from '../context/QueueContext';
 import {
@@ -35,11 +36,16 @@ import {
   updateMediaSessionPlaybackState,
   updateMediaSessionPositionState,
   clearMediaSession,
+  isPictureInPictureSupported,
+  requestPictureInPicture,
+  exitPictureInPicture,
+  isPictureInPictureActive,
 } from '../utils/mediaSession';
 import {
   saveWatchProgress,
   getWatchProgress,
   formatDuration,
+  parseDuration,
 } from '../utils/watchHistory';
 
 export type QualityId = '1080p' | '720p' | '480p' | '360p' | 'audio';
@@ -65,7 +71,7 @@ export interface StreamPlayerTrack {
   title: string;
   channel?: string;
   artist?: string;
-  duration?: number;
+  duration?: number | string;
   initialQuality?: QualityId;
   initialType?: 'audio' | 'video';
   initialTime?: number;
@@ -92,10 +98,11 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   onTrackChange,
 }) => {
   const defaultQuality: QualityId = track.initialQuality || (track.initialType === 'audio' ? 'audio' : '480p');
+  const initialDuration = parseDuration(track.duration);
   const [quality, setQuality] = useState<QualityId>(defaultQuality);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(track.initialTime || 0);
-  const [duration, setDuration] = useState<number>(track.duration || 0);
+  const [duration, setDuration] = useState<number>(initialDuration);
   const [bufferedEnd, setBufferedEnd] = useState<number>(0);
   const [isBuffering, setIsBuffering] = useState<boolean>(true);
   const [isAutoplayBlocked, setIsAutoplayBlocked] = useState<boolean>(false);
@@ -111,6 +118,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   const [sleepTimerRemaining, setSleepTimerRemaining] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streamStartTime, setStreamStartTime] = useState<number>(track.initialTime || 0);
+  const [seekNonce, setSeekNonce] = useState<number>(0);
   const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
   const [scrubTime, setScrubTime] = useState<number | null>(null);
   const [isDevicePortrait, setIsDevicePortrait] = useState<boolean>(() => {
@@ -123,12 +131,21 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   const [isTheaterMode, setIsTheaterMode] = useState<boolean>(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState<boolean>(false);
 
+  // Picture-in-Picture nativo (mini pantalla flotante del sistema)
+  const [isPipSupported] = useState<boolean>(() => isPictureInPictureSupported());
+  const [isPipActive, setIsPipActive] = useState<boolean>(() => {
+    if (typeof document !== 'undefined') {
+      return Boolean(document.pictureInPictureElement);
+    }
+    return false;
+  });
+
   // Notificación flotante de reanudación y persistencia de progreso
   const [resumePrompt, setResumePrompt] = useState<{ currentTime: number } | null>(null);
   const resumeDismissTimeoutRef = useRef<any>(null);
   const lastSaveTimeRef = useRef<number>(0);
   const currentTimeRef = useRef<number>(track.initialTime || 0);
-  const durationRef = useRef<number>(track.duration || 0);
+  const durationRef = useRef<number>(parseDuration(track.duration));
   const qualityRef = useRef<QualityId>(defaultQuality);
 
   useEffect(() => {
@@ -148,6 +165,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     y: number;
     time: number;
     isDragHandle?: boolean;
+    canSwipeDown?: boolean;
   } | null>(null);
   const lastTapRef = useRef<{ time: number; zone: 'left' | 'right' | 'center' } | null>(null);
   const singleTapTimeoutRef = useRef<any>(null);
@@ -174,6 +192,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   const progressBarRef = useRef<HTMLDivElement>(null);
   const pendingSeekTimeRef = useRef<number | null>(track.initialTime || null);
   const wasPlayingRef = useRef<boolean>(true);
+  const wasPlayingBeforeScrubRef = useRef<boolean>(true);
   const fractionalSeekRef = useRef<number>(0);
 
   const { toast } = useToast();
@@ -205,18 +224,34 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
 
   useEffect(() => {
     const defaultQ: QualityId = track.initialQuality || (track.initialType === 'audio' ? 'audio' : '480p');
+    const parsedDur = parseDuration(track.duration);
     setQuality(defaultQ);
     setCurrentTime(track.initialTime || 0);
-    setDuration(track.duration || 0);
+    setDuration(parsedDur);
     setStreamStartTime(track.initialTime || 0);
     currentTimeRef.current = track.initialTime || 0;
-    durationRef.current = track.duration || 0;
+    durationRef.current = parsedDur;
     pendingSeekTimeRef.current = track.initialTime || null;
     setBufferedEnd(0);
     setError(null);
     setIsBuffering(true);
     setIsAutoplayBlocked(false);
     wasPlayingRef.current = true;
+
+    // Fallback background fetch: si duration es 0 o falsy, recuperarla inmediatamente con getVideoInfo
+    if (!track.duration && track.videoId && !track.videoId.startsWith('local_')) {
+      getVideoInfo(track.videoId)
+        .then((info) => {
+          if (info && info.duration) {
+            const parsedDur = parseDuration(info.duration);
+            if (parsedDur > 0) {
+              setDuration(parsedDur);
+              durationRef.current = parsedDur;
+            }
+          }
+        })
+        .catch(() => {});
+    }
   }, [track.videoId, track.streamUrl]);
 
   // Detección de reanudación al cargar el track si no viene con initialTime explícito
@@ -244,13 +279,15 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   }, [track.videoId, track.initialTime]);
 
   const isAudioOnly = quality === 'audio';
-  const isLocal = track.videoId.startsWith('local_') || Boolean(track.streamUrl);
-  const streamUrl = track.streamUrl || getStreamMediaUrl(
-    track.videoId,
-    isAudioOnly ? 'audio' : 'video',
-    quality,
-    streamStartTime > 0 ? streamStartTime : undefined
-  );
+  const isLocal = track.videoId.startsWith('local_') || Boolean(track.streamUrl?.includes('/library/'));
+  const streamUrl = (isLocal && track.streamUrl)
+    ? track.streamUrl
+    : getStreamMediaUrl(
+        track.videoId,
+        isAudioOnly ? 'audio' : 'video',
+        quality,
+        streamStartTime > 0 ? streamStartTime : undefined
+      ) + (seekNonce > 0 ? `&seek=${seekNonce}` : '');
   const thumbUrl = isLocal ? '' : `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg`;
 
   // Función de guardado de progreso multimedia
@@ -262,7 +299,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       ? (el?.currentTime ?? currentTimeRef.current)
       : (streamStartTime + (el?.currentTime ?? 0));
 
-    const totalDur = durationRef.current || duration || el?.duration || track.duration || 0;
+    const totalDur = parseDuration(durationRef.current || duration || el?.duration || track.duration || 0);
     if (totalDur <= 0) return;
 
     saveWatchProgress({
@@ -458,18 +495,25 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     const el = mediaRef.current;
     if (!el) return;
 
-    const boundedTime = Math.max(0, Math.min(duration || targetTime, targetTime));
-    wasPlayingRef.current = isPlaying;
+    const effectiveDuration = duration || durationRef.current || targetTime;
+    const boundedTime = Math.max(0, Math.min(effectiveDuration, targetTime));
+    
+    // Mantener la intención de reproducción si venía reproduciendo o inició scrub activo
+    const shouldResume = wasPlayingBeforeScrubRef.current || wasPlayingRef.current || isPlaying;
+    wasPlayingRef.current = shouldResume;
 
     // 1. Pistas locales o solo audio: navegación nativa por HTTP Range 206
     if (isLocal || isAudioOnly) {
       el.currentTime = boundedTime;
       setCurrentTime(boundedTime);
       triggerControlsVisibility();
+      if (shouldResume) {
+        attemptPlay();
+      }
       return;
     }
 
-    // 2. Video streaming remuxeado:
+    // 2. Video streaming remuxeado fMP4:
     // Verificar si el punto de destino ya está cargado en la memoria del búfer actual
     const sliceOffset = boundedTime - streamStartTime;
     let isWithinCurrentBuffer = false;
@@ -487,14 +531,20 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       // Salto instantáneo en el búfer ya descargado
       el.currentTime = sliceOffset;
       setCurrentTime(boundedTime);
+      setIsBuffering(false);
+      if (shouldResume) {
+        attemptPlay();
+      }
     } else {
       // Salto fuera del búfer (adelantar a cualquier minuto o retroceder antes de streamStartTime):
       // Solicitud al servidor para iniciar streaming desde boundedTime
       setIsBuffering(true);
       setCurrentTime(boundedTime);
+      setBufferedEnd(boundedTime); // Limpiar buffer visual para evitar saltos fantasma
       const newStart = Math.floor(boundedTime);
       fractionalSeekRef.current = boundedTime - newStart;
       setStreamStartTime(newStart);
+      setSeekNonce((prev) => prev + 1); // Forzar que la URL cambie y FFmpeg reconecte de inmediato
     }
     triggerControlsVisibility();
   };
@@ -521,20 +571,22 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     const currentPos = (isLocal || isAudioOnly)
       ? (el?.currentTime || currentTime)
       : (streamStartTime + (el?.currentTime || 0));
-    const newTime = Math.max(0, Math.min(duration || Infinity, currentPos + seconds));
+    const effectiveDuration = duration || durationRef.current || Infinity;
+    const newTime = Math.max(0, Math.min(effectiveDuration, currentPos + seconds));
     executeSeek(newTime);
   };
 
   // Cálculo de tiempo desde eventos táctiles / ratón en la barra de progreso
   const calculateTimeFromPointer = (e: React.PointerEvent<HTMLDivElement>): number => {
     const bar = progressBarRef.current;
-    if (!bar || !duration) return 0;
+    const effectiveDuration = duration || durationRef.current;
+    if (!bar || !effectiveDuration) return 0;
     const rect = bar.getBoundingClientRect();
     const isRotated = isFullscreen && isDevicePortrait && forceLandscape;
     const pos = isRotated
       ? Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height))
       : Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    return pos * duration;
+    return pos * effectiveDuration;
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -542,6 +594,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
     setIsScrubbing(true);
+    wasPlayingBeforeScrubRef.current = isPlaying;
     wasPlayingRef.current = isPlaying;
     const target = calculateTimeFromPointer(e);
     setScrubTime(target);
@@ -845,7 +898,32 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     };
   }, [quality]);
 
-  // Atajos de teclado en Desktop estilo YouTube (Play, Fullscreen, Mute, Seek J/L, Volumen Flechas, Teclas 0-9, Teatro T, Atajos ?)
+  // Alternar Picture-in-Picture nativo (mini pantalla flotante del sistema)
+  const togglePictureInPicture = useCallback(async () => {
+    const el = mediaRef.current;
+    if (!el || !(el instanceof HTMLVideoElement) || isAudioOnly) {
+      toast.info('Picture-in-Picture', 'Solo disponible en modo video.');
+      return;
+    }
+
+    try {
+      if (isPictureInPictureActive(el)) {
+        await exitPictureInPicture(el);
+        setIsPipActive(false);
+      } else {
+        await requestPictureInPicture(el);
+        setIsPipActive(true);
+      }
+    } catch (err: any) {
+      console.warn('Error al alternar Picture-in-Picture:', err);
+      toast.info(
+        'Pantalla Flotante no disponible',
+        'Tu navegador o dispositivo no permite la mini ventana en este momento.'
+      );
+    }
+  }, [isAudioOnly, toast]);
+
+  // Atajos de teclado en Desktop estilo YouTube (Play, Fullscreen, Mute, Seek J/L, Volumen Flechas, Teclas 0-9, Teatro T, PiP P, Atajos ?)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const activeEl = document.activeElement;
@@ -886,6 +964,11 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       } else if (e.key === 't' || e.key === 'T') {
         e.preventDefault();
         toggleTheaterMode();
+      } else if (e.key === 'p' || e.key === 'P') {
+        e.preventDefault();
+        if (!isAudioOnly) {
+          togglePictureInPicture();
+        }
       } else if (e.key === '?') {
         e.preventDefault();
         setShowShortcutsModal((prev) => !prev);
@@ -910,6 +993,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     duration,
     adjustVolume,
     toggleTheaterMode,
+    togglePictureInPicture,
     showShortcutsModal,
     streamStartTime,
     isLocal,
@@ -934,6 +1018,59 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     onClose();
   };
 
+  // Configurar autoPictureInPicture y sincronizar eventos nativos de PiP
+  useEffect(() => {
+    const videoEl = mediaRef.current;
+    if (!videoEl || !(videoEl instanceof HTMLVideoElement) || isAudioOnly) return;
+
+    try {
+      (videoEl as any).autoPictureInPicture = true;
+    } catch {}
+
+    const handleEnterPip = () => setIsPipActive(true);
+    const handleLeavePip = () => setIsPipActive(false);
+
+    videoEl.addEventListener('enterpictureinpicture', handleEnterPip);
+    videoEl.addEventListener('leavepictureinpicture', handleLeavePip);
+
+    const handlePresentationModeChange = () => {
+      const mode = (videoEl as any).webkitPresentationMode;
+      setIsPipActive(mode === 'picture-in-picture');
+    };
+    videoEl.addEventListener('webkitpresentationmodechanged', handlePresentationModeChange);
+
+    return () => {
+      videoEl.removeEventListener('enterpictureinpicture', handleEnterPip);
+      videoEl.removeEventListener('leavepictureinpicture', handleLeavePip);
+      videoEl.removeEventListener('webkitpresentationmodechanged', handlePresentationModeChange);
+    };
+  }, [quality, isAudioOnly]);
+
+  // Sincronización de segundo plano y mantenimiento de audio al minimizar el navegador
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const el = mediaRef.current;
+      if (!el) return;
+
+      if (document.hidden) {
+        if (isPlaying) {
+          updateMediaSessionPlaybackState('playing');
+        }
+      } else {
+        setIsPlaying(!el.paused);
+        const trueTime = (isLocal || isAudioOnly)
+          ? el.currentTime
+          : (streamStartTime + el.currentTime);
+        setCurrentTime(trueTime);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isPlaying, isAudioOnly, isLocal, streamStartTime]);
+
   // Feedback visual de doble toque (animación fluorescente ±10s durante 600ms)
   const triggerDoubleTapFeedback = (side: 'left' | 'right') => {
     setDoubleTapFeedback(side);
@@ -951,6 +1088,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       attemptPlay();
       triggerControlsVisibility();
     } else if (!showControls) {
+      // Primer toque mientras se reproduce: ÚNICAMENTE despierta controles sin pausar
       triggerControlsVisibility();
     } else {
       togglePlay();
@@ -967,20 +1105,13 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       const touch = e.touches[0];
       const isDragHandle = Boolean(target && (target.closest('[data-testid="drag-handle"]') || target.closest('[data-testid="drag-handle-bar"]')));
 
-      // 1. Zona de exclusión de notificaciones Android:
-      // Si touch.clientY < 75 (área de barra de estado y notch donde se baja el panel de notificaciones de Android),
-      // ignorar por completo el gesto de swipe-down, excepto si el usuario interactúa expresamente con el tirador táctil.
-      if (touch.clientY < 75 && !isDragHandle) {
-        isSwipingDownRef.current = false;
-        touchStartPosRef.current = null;
-        return;
-      }
-
+      // Permitir taps en toda la pantalla pero restringir el swipe-down si inició en la barra de estado de Android (< 75px) sin el tirador
       touchStartPosRef.current = {
         x: touch.clientX,
         y: touch.clientY,
         time: Date.now(),
         isDragHandle,
+        canSwipeDown: isDragHandle || touch.clientY >= 75,
       };
       isSwipingDownRef.current = false;
     }
@@ -989,6 +1120,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   // Manejador de touchMove para Swipe Down fluido
   const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
     if (!touchStartPosRef.current || e.touches.length === 0) return;
+    if (!touchStartPosRef.current.canSwipeDown) return;
     const touch = e.touches[0];
     const deltaY = touch.clientY - touchStartPosRef.current.y;
     const deltaX = Math.abs(touch.clientX - touchStartPosRef.current.x);
@@ -1022,8 +1154,9 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     // 1. Gesto Swipe Down (al menos deltaY > 110px y deltaY > deltaX * 1.5): minimiza suavemente al MiniPlayer
     const isFromDragHandle = Boolean(start.isDragHandle);
     const isSwipeDown =
-      (deltaY > 110 && deltaY > deltaX * 1.5) ||
-      (isFromDragHandle && deltaY > 50 && deltaY > deltaX * 1.5);
+      start.canSwipeDown &&
+      ((deltaY > 110 && deltaY > deltaX * 1.5) ||
+        (isFromDragHandle && deltaY > 50 && deltaY > deltaX * 1.5));
 
     if (isSwipeDown) {
       if (singleTapTimeoutRef.current) clearTimeout(singleTapTimeoutRef.current);
@@ -1157,12 +1290,25 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
           executeSeek(details.seekTime);
         }
       },
+      enterpictureinpicture: () => {
+        if (!isAudioOnly) {
+          togglePictureInPicture();
+        }
+      },
     });
 
     return () => {
       clearMediaSession();
     };
-  }, [track.videoId, duration, streamStartTime, isLocal, isAudioOnly, quality]);
+  }, [
+    track.videoId,
+    duration,
+    streamStartTime,
+    isLocal,
+    isAudioOnly,
+    quality,
+    togglePictureInPicture,
+  ]);
 
   // Formato de tiempo (mm:ss o hh:mm:ss)
   const formatTime = (secs: number) => {
@@ -1184,6 +1330,8 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     isAudioOnly ? 'audio' : 'video',
     quality === 'audio' ? 'mp3_320' : quality
   );
+
+  const areControlsVisible = showControls || !isPlaying;
 
   return (
     <div
@@ -1222,13 +1370,26 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
         <div className="absolute inset-0 w-full h-full flex items-center justify-center bg-black">
           {!isAudioOnly ? (
             <video
-              ref={(el) => { (mediaRef as any).current = el; }}
+              ref={(el) => {
+                (mediaRef as any).current = el;
+                if (el) {
+                  try {
+                    (el as any).autoPictureInPicture = true;
+                  } catch {}
+                }
+              }}
               src={streamUrl}
+              autoPlay={wasPlayingRef.current || isPlaying}
               playsInline
               webkit-playsinline="true"
               onTimeUpdate={handleTimeUpdate}
               onProgress={handleProgress}
               onLoadedMetadata={handleLoadedMetadata}
+              onCanPlay={() => {
+                if (wasPlayingRef.current && mediaRef.current?.paused) {
+                  attemptPlay();
+                }
+              }}
               onWaiting={() => setIsBuffering(true)}
               onPlaying={() => { setIsBuffering(false); setIsPlaying(true); }}
               onPause={() => setIsPlaying(false)}
@@ -1257,10 +1418,14 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
             />
           ) : (
             /* Modo Solo Audio con Carátula */
-            <div className="w-full h-full flex flex-col items-center justify-center p-6 bg-gradient-to-b from-slate-900 via-slate-950 to-black">
+            <div
+              onClick={handleVideoClick}
+              className="w-full h-full flex flex-col items-center justify-center p-6 bg-gradient-to-b from-slate-900 via-slate-950 to-black cursor-pointer"
+            >
               <audio
                 ref={(el) => { (mediaRef as any).current = el; }}
                 src={streamUrl}
+                autoPlay={wasPlayingRef.current || isPlaying}
                 onTimeUpdate={handleTimeUpdate}
                 onProgress={handleProgress}
                 onLoadedMetadata={handleLoadedMetadata}
@@ -1409,14 +1574,21 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
         {/* OVERLAY COMPLETO ESTILO YOUTUBE CON DESVANECIMIENTO AUTOMÁTICO */}
         {/* ============================================================ */}
         <div
+          data-testid="controls-overlay"
           className={`absolute inset-0 z-30 flex flex-col justify-between transition-opacity duration-300 pointer-events-none ${
-            showControls || !isPlaying
+            areControlsVisible
               ? 'opacity-100'
               : 'opacity-0'
           }`}
+          aria-hidden={!areControlsVisible}
+          inert={!areControlsVisible ? true : undefined}
         >
           {/* BARRA SUPERIOR (GRADIENTE CINEMATOGRÁFICO) CON TIRADOR DE ARRASTRE */}
-          <div className="px-3 pt-1 pb-3 sm:px-4 sm:pt-1.5 sm:pb-4 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex flex-col pointer-events-auto">
+          <div
+            className={`px-3 pt-1 pb-3 sm:px-4 sm:pt-1.5 sm:pb-4 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex flex-col transition-all duration-300 ${
+              areControlsVisible ? 'pointer-events-auto' : 'pointer-events-none'
+            }`}
+          >
             {/* TIRADOR VISUAL DE ARRASTRE (DRAG HANDLE) */}
             <div
               data-testid="drag-handle"
@@ -1577,7 +1749,11 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
         </div>
 
           {/* CONTROLES TÁCTILES CENTRALES: PLAY/PAUSE O SPINNER DE BUFFERING */}
-          <div className="flex flex-col items-center justify-center gap-3 pointer-events-auto my-auto">
+          <div
+            className={`flex flex-col items-center justify-center gap-3 my-auto transition-all duration-300 ${
+              areControlsVisible ? 'pointer-events-auto' : 'pointer-events-none'
+            }`}
+          >
             <div className="flex items-center justify-center gap-4 sm:gap-8">
               {queue.length > 0 && (
                 <button
@@ -1655,38 +1831,45 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
           </div>
 
           {/* BARRA INFERIOR (SCRUBBER DE PROGRESO + CONTROLES + ÚNICO FULLSCREEN) */}
-          <div className="p-3 sm:p-4 bg-gradient-to-t from-black/95 via-black/70 to-transparent flex flex-col gap-2 pointer-events-auto">
-            {/* Scrubber de Búfer y Progreso Interactivo (Estilo YouTube) */}
+          <div
+            className={`p-3 sm:p-4 bg-gradient-to-t from-black/95 via-black/70 to-transparent flex flex-col gap-2 transition-all duration-300 ${
+              areControlsVisible ? 'pointer-events-auto' : 'pointer-events-none'
+            }`}
+          >
+            {/* Scrubber de Búfer y Progreso Interactivo (Hit-Box de 44px para dedos/pulgares móviles) */}
             <div
               ref={progressBarRef}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onPointerCancel={handlePointerUp}
-              className="relative w-full h-2.5 hover:h-4 bg-white/20 rounded-full cursor-pointer transition-all touch-none group select-none py-1 -my-1"
+              className="relative w-full py-4 -my-3 flex items-center cursor-pointer touch-none group select-none"
               title="Buscar en cualquier parte del video"
             >
-              {/* Barra de Búfer Descargado */}
-              <div
-                className="absolute top-1 bottom-1 bg-white/40 rounded-full transition-all duration-300 pointer-events-none"
-                style={{
-                  left: `${bufferLeftPercent}%`,
-                  width: `${bufferWidthPercent}%`,
-                }}
-              />
+              {/* Pista Visual Delgada y Estética */}
+              <div className="relative w-full h-2 group-hover:h-3.5 bg-white/20 rounded-full transition-all duration-150 overflow-hidden pointer-events-none">
+                {/* Barra de Búfer Descargado */}
+                <div
+                  className="absolute inset-y-0 bg-white/40 rounded-full transition-all duration-300"
+                  style={{
+                    left: `${bufferLeftPercent}%`,
+                    width: `${bufferWidthPercent}%`,
+                  }}
+                />
 
-              {/* Barra de Reproducción Actual */}
-              <div
-                className="absolute top-1 bottom-1 left-0 bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 rounded-full pointer-events-none"
-                style={{ width: `${currentPercent}%` }}
-              />
+                {/* Barra de Reproducción Actual */}
+                <div
+                  className="absolute inset-y-0 left-0 bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 rounded-full"
+                  style={{ width: `${currentPercent}%` }}
+                />
+              </div>
 
-              {/* Aguja / Cabeza Lectora (Scrubber Handle con feedback táctil) */}
+              {/* Aguja / Cabeza Lectora (Scrubber Handle con feedback táctil y visual) */}
               <div
-                className={`absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-white rounded-full shadow border-2 border-rose-600 transition-transform pointer-events-none ${
+                className={`absolute top-1/2 -translate-y-1/2 w-4 h-4 sm:w-4.5 sm:h-4.5 bg-white rounded-full shadow-lg border-2 border-rose-600 transition-transform duration-150 pointer-events-none ${
                   isScrubbing ? 'scale-125 ring-4 ring-rose-500/40' : 'scale-0 group-hover:scale-100'
                 }`}
-                style={{ left: `calc(${currentPercent}% - 7px)` }}
+                style={{ left: `calc(${currentPercent}% - 8px)` }}
               />
             </div>
 
@@ -1828,6 +2011,23 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
                     <span className="text-[11px]">
                       {aspectRatioMode === 'cover' ? 'Llenar pantalla' : 'Ajustar'}
                     </span>
+                  </button>
+                )}
+
+                {/* BOTÓN PICTURE-IN-PICTURE (MINI PANTALLA FLOTANTE DEL SISTEMA) */}
+                {!isAudioOnly && isPipSupported && (
+                  <button
+                    onClick={togglePictureInPicture}
+                    data-testid="pip-btn"
+                    className={`p-1.5 sm:p-2 rounded-xl border transition-all active:scale-90 flex items-center gap-1.5 ${
+                      isPipActive
+                        ? 'bg-rose-600 border-rose-500 text-white shadow-lg shadow-rose-500/30'
+                        : 'bg-white/10 hover:bg-white/20 border-transparent text-slate-300 hover:text-white'
+                    }`}
+                    title={isPipActive ? 'Salir de pantalla flotante (P)' : 'Pantalla flotante / PiP (P)'}
+                    aria-label={isPipActive ? 'Salir de pantalla flotante' : 'Pantalla flotante'}
+                  >
+                    <PictureInPicture2 className={`w-4 h-4 ${isPipActive ? 'text-white' : 'text-rose-400'}`} />
                   </button>
                 )}
 

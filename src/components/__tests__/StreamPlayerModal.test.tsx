@@ -158,4 +158,45 @@ describe('StreamPlayerModal Integration Tests', () => {
     expect(rootWrapper.className).not.toContain('bg-black/90');
     expect(rootWrapper.className).toContain('w-full');
   });
+
+  it('debe renderizar el botón de Picture-in-Picture cuando el navegador lo soporta y alternar PiP al hacer click', async () => {
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      value: true,
+      configurable: true,
+    });
+    const mockRequestPiP = vi.fn().mockResolvedValue({});
+    window.HTMLVideoElement.prototype.requestPictureInPicture = mockRequestPiP;
+
+    renderModal(<StreamPlayerModal track={mockTrack} onClose={vi.fn()} />);
+
+    const pipButton = screen.getByTestId('pip-btn');
+    expect(pipButton).toBeInTheDocument();
+
+    fireEvent.click(pipButton);
+    expect(mockRequestPiP).toHaveBeenCalledTimes(1);
+  });
+
+  it('debe alternar Picture-in-Picture al pulsar la tecla P', () => {
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      value: true,
+      configurable: true,
+    });
+    const mockRequestPiP = vi.fn().mockResolvedValue({});
+    window.HTMLVideoElement.prototype.requestPictureInPicture = mockRequestPiP;
+
+    renderModal(<StreamPlayerModal track={mockTrack} onClose={vi.fn()} />);
+
+    fireEvent.keyDown(window, { key: 'p' });
+    expect(mockRequestPiP).toHaveBeenCalledTimes(1);
+  });
+
+  it('debe renderizar el Scrubber con Hit-Box táctil de 44px para móviles', () => {
+    renderModal(<StreamPlayerModal track={mockTrack} onClose={vi.fn()} />);
+
+    const scrubber = screen.getByTitle('Buscar en cualquier parte del video');
+    expect(scrubber).toBeInTheDocument();
+    // Hit-box táctil transparente con py-4 y flex items-center
+    expect(scrubber.className).toContain('py-4');
+    expect(scrubber.className).toContain('touch-none');
+  });
 });

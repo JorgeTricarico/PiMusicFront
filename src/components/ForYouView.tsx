@@ -22,6 +22,7 @@ import type { SaveServerTarget } from './SaveServerConfirmModal';
 import type { QualityId } from './StreamPlayerModal';
 import { useToast } from '../context/ToastContext';
 import { useQueue } from '../context/QueueContext';
+import { parseDuration } from '../utils/watchHistory';
 
 interface ForYouViewProps {
   onPlayMedia: (track: {
@@ -29,6 +30,7 @@ interface ForYouViewProps {
     title: string;
     type: 'audio' | 'video';
     quality?: QualityId;
+    duration?: number;
   }) => void;
   onOpenDownloadConfirm: (target: DownloadTarget) => void;
   onOpenSaveConfirm: (target: SaveServerTarget) => void;
@@ -75,20 +77,23 @@ export const ForYouView: React.FC<ForYouViewProps> = ({
   }, [fetchFeed]);
 
   const handlePlayItem = (item: RecommendationItem | RecommendationHero) => {
+    const durSecs = parseDuration(item.duration);
+
     // Registrar en el historial para afinar el algoritmo
     recordHistory({
       videoId: item.videoId,
       title: item.title,
       artist: item.uploader,
       thumbnail: item.thumbnail,
-      duration: item.duration
+      duration: item.duration || (durSecs > 0 ? durSecs : undefined)
     });
 
     onPlayMedia({
       id: item.videoId,
       title: item.title,
       type: 'video', // 480p de video por defecto
-      quality: '480p'
+      quality: '480p',
+      duration: durSecs > 0 ? durSecs : undefined
     });
   };
 

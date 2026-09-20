@@ -308,7 +308,7 @@ export async function recordHistory(item: {
   title: string;
   artist?: string;
   thumbnail?: string;
-  duration?: string;
+  duration?: string | number;
 }): Promise<void> {
   try {
     const baseUrl = getBackendUrl();
