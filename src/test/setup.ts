@@ -31,6 +31,16 @@ Object.defineProperty(window, 'matchMedia', {
   disconnect = vi.fn();
 };
 
+// Polyfill para scrollTo y scrollIntoView en JSDOM
+if (typeof window !== 'undefined') {
+  if (!window.scrollTo) {
+    window.scrollTo = vi.fn();
+  }
+  if (!window.HTMLElement.prototype.scrollIntoView) {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  }
+}
+
 // Polyfill para HTMLMediaElement (Audio y Video en JSDOM)
 Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
   configurable: true,

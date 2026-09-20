@@ -70,6 +70,18 @@ export const LinkDownloader: React.FC<LinkDownloaderProps> = ({ onPlayPreview, i
     triggerAnalyze(url);
   };
 
+  const handlePlayPreview = (
+    videoId: string,
+    title: string,
+    type: 'audio' | 'video',
+    quality?: QualityId,
+    streamUrl?: string,
+    duration?: number
+  ) => {
+    toast.info('Iniciando reproductor...', `"${title}"`, 1800);
+    onPlayPreview(videoId, title, type, quality, streamUrl, duration);
+  };
+
   return (
     <div className="w-full max-w-4xl mx-auto flex flex-col items-center gap-8 py-8 px-4">
       {/* Hero Title */}
@@ -139,13 +151,13 @@ export const LinkDownloader: React.FC<LinkDownloaderProps> = ({ onPlayPreview, i
           >
             {loading ? (
               <>
-                <Loader2 className="w-5 h-5 animate-spin" />
+                <Loader2 className="w-4 h-4 animate-spin" />
                 <span>Analizando enlace...</span>
               </>
             ) : (
               <>
                 <span>Analizar y Descargar</span>
-                <ArrowRight className="w-5 h-5" />
+                <ArrowRight className="w-4 h-4" />
               </>
             )}
           </button>
@@ -172,7 +184,7 @@ export const LinkDownloader: React.FC<LinkDownloaderProps> = ({ onPlayPreview, i
 
       {/* Video Result Card */}
       {videoInfo && !loading && (
-        <FormatCard info={videoInfo} onPlayPreview={onPlayPreview} />
+        <FormatCard info={videoInfo} onPlayPreview={handlePlayPreview} />
       )}
     </div>
   );

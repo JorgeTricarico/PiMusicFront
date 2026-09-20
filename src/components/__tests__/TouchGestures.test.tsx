@@ -146,8 +146,8 @@ describe('TouchGestures and MediaSession Integration Tests', () => {
     });
   });
 
-  describe('Gesto Swipe Down (Deslizar hacia abajo para minimizar)', () => {
-    it('al deslizar hacia abajo más de 70px gatilla onMinimize y onClose hacia el MiniPlayer', () => {
+  describe('Gesto Swipe Down (Deslizar hacia abajo para minimizar) y Tirador Visual', () => {
+    it('al deslizar hacia abajo más de 110px verticalmente gatilla onMinimize y onClose hacia el MiniPlayer', () => {
       const onClose = vi.fn();
       const onMinimize = vi.fn();
       renderWithToast(
@@ -160,8 +160,8 @@ describe('TouchGestures and MediaSession Integration Tests', () => {
 
       const container = screen.getByTestId('player-container');
 
-      // Deslizar de Y=100 a Y=185 (deltaY = 85px > 70px)
-      triggerSwipe(container, 100, 185);
+      // Deslizar de Y=100 a Y=220 (deltaY = 120px > 110px, verticalmente puro deltaX = 0)
+      triggerSwipe(container, 100, 220);
 
       expect(onMinimize).toHaveBeenCalledTimes(1);
       expect(onMinimize).toHaveBeenCalledWith(
@@ -173,7 +173,7 @@ describe('TouchGestures and MediaSession Integration Tests', () => {
       expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    it('un desplazamiento hacia abajo menor a 70px NO debe minimizar el reproductor', () => {
+    it('un desplazamiento hacia abajo menor a 110px NO debe minimizar el reproductor', () => {
       const onClose = vi.fn();
       const onMinimize = vi.fn();
       renderWithToast(
@@ -186,11 +186,110 @@ describe('TouchGestures and MediaSession Integration Tests', () => {
 
       const container = screen.getByTestId('player-container');
 
-      // Deslizar solo 40px (de Y=100 a Y=140)
-      triggerSwipe(container, 100, 140);
+      // Deslizar 85px (de Y=100 a Y=185, deltaY = 85px < 110px)
+      triggerSwipe(container, 100, 185);
 
       expect(onMinimize).not.toHaveBeenCalled();
       expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('un deslizamiento iniciado en la zona de exclusión superior (clientY < 75) NO debe minimizar (protección barra de notificaciones Android)', () => {
+      const onClose = vi.fn();
+      const onMinimize = vi.fn();
+      renderWithToast(
+        <StreamPlayerModal
+          track={mockTrack}
+          onClose={onClose}
+          onMinimize={onMinimize}
+        />
+      );
+
+      const container = screen.getByTestId('player-container');
+
+      // Deslizar desde Y=40 (< 75px) hasta Y=200 (deltaY = 160px > 110px)
+      triggerSwipe(container, 40, 200);
+
+      expect(onMinimize).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('un deslizamiento diagonal donde deltaY <= deltaX * 1.5 NO debe minimizar el reproductor', () => {
+      const onClose = vi.fn();
+      const onMinimize = vi.fn();
+      renderWithToast(
+        <StreamPlayerModal
+          track={mockTrack}
+          onClose={onClose}
+          onMinimize={onMinimize}
+        />
+      );
+
+      const container = screen.getByTestId('player-container');
+
+      // Deslizar con deltaY = 120 (100 a 220) pero deltaX = 100 (500 a 600).
+      // deltaX * 1.5 = 150 > 120 -> no cumple deltaY > deltaX * 1.5
+      triggerSwipe(container, 100, 220, 500, 600);
+
+      expect(onMinimize).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('el tirador táctil visual (drag handle) permite arrastrar hacia abajo para minimizar', () => {
+      const onClose = vi.fn();
+      const onMinimize = vi.fn();
+      renderWithToast(
+        <StreamPlayerModal
+          track={mockTrack}
+          onClose={onClose}
+          onMinimize={onMinimize}
+        />
+      );
+
+      const dragHandle = screen.getByTestId('drag-handle');
+      expect(dragHandle).toBeInTheDocument();
+
+      // Arrastrar desde el tirador hacia abajo
+      triggerSwipe(dragHandle, 20, 160);
+
+      expect(onMinimize).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('hacer clic o presionar en el tirador táctil (drag handle) minimiza el reproductor', () => {
+      const onClose = vi.fn();
+      const onMinimize = vi.fn();
+      renderWithToast(
+        <StreamPlayerModal
+          track={mockTrack}
+          onClose={onClose}
+          onMinimize={onMinimize}
+        />
+      );
+
+      const dragHandle = screen.getByTestId('drag-handle');
+      fireEvent.click(dragHandle);
+
+      expect(onMinimize).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('el botón ChevronDown en la esquina superior izquierda sigue visible, accesible y funcional para minimizar', () => {
+      const onClose = vi.fn();
+      const onMinimize = vi.fn();
+      renderWithToast(
+        <StreamPlayerModal
+          track={mockTrack}
+          onClose={onClose}
+          onMinimize={onMinimize}
+        />
+      );
+
+      const minimizeBtn = screen.getByTitle('Minimizar reproductor');
+      expect(minimizeBtn).toBeInTheDocument();
+      fireEvent.click(minimizeBtn);
+
+      expect(onMinimize).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { BottomNav } from './components/BottomNav';
 import { ForYouView } from './components/ForYouView';
@@ -31,6 +31,9 @@ function AppContent() {
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
   const [isBackendConnected, setIsBackendConnected] = useState(false);
+
+  // Referencia a la sección del reproductor para auto-scroll y protagonismo visual en móvil (< md)
+  const playerSectionRef = useRef<HTMLElement | null>(null);
 
   // Modales de confirmación para descargas desde la vista "Para ti"
   const [foryouDownloadTarget, setForyouDownloadTarget] = useState<DownloadTarget | null>(null);
@@ -123,7 +126,33 @@ function AppContent() {
     };
     setStreamTrack(newTrack);
     playTrack(newTrack);
+
+    // Scroll suave inmediato hacia la cima para asegurar que en móvil (< md)
+    // el usuario vea el reproductor montado y no quede desplazado hacia abajo fuera de la vista
+    if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
+
+  // Auto-scroll suave y enfoque en la sección del reproductor cuando streamTrack cambia
+  // Garantiza que en pantallas móviles (< md) el reproductor sea el protagonista visual inmediato
+  useEffect(() => {
+    if (streamTrack) {
+      const scrollToPlayer = () => {
+        if (playerSectionRef.current && typeof playerSectionRef.current.scrollIntoView === 'function') {
+          playerSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          if (typeof playerSectionRef.current.focus === 'function') {
+            playerSectionRef.current.focus({ preventScroll: true });
+          }
+        } else if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      };
+
+      const rafId = requestAnimationFrame(scrollToPlayer);
+      return () => cancelAnimationFrame(rafId);
+    }
+  }, [streamTrack?.videoId, Boolean(streamTrack)]);
 
   // Al minimizar el modal, transferir la reproducción al mini-reproductor flotante
   const handleMinimizeStream = (state: {
@@ -211,7 +240,13 @@ function AppContent() {
 
       {/* REPRODUCTOR INTEGRADO ESTILO YOUTUBE (VISIBLE JUNTO A LA PÁGINA) */}
       {streamTrack && (
-        <section className="w-full bg-slate-950/90 border-b border-slate-800/80 py-2 sm:py-4 px-2 sm:px-4 animate-fadeIn">
+        <section
+          ref={playerSectionRef}
+          tabIndex={-1}
+          aria-label="Reproductor de streaming"
+          data-testid="player-section"
+          className="w-full bg-slate-950/95 border-b border-slate-800/80 py-1.5 sm:py-4 px-1 sm:px-4 animate-fadeIn scroll-mt-14 sm:scroll-mt-16 focus:outline-none"
+        >
           <div className="w-full max-w-7xl mx-auto flex justify-center">
             <StreamPlayerModal
               track={streamTrack}

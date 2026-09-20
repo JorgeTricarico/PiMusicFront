@@ -139,14 +139,19 @@ export const SearchDownloader: React.FC<SearchDownloaderProps> = ({ onPlayPrevie
     setSelectedQualities((prev) => ({ ...prev, [id]: q }));
   };
 
-  const handlePlayItem = (item: SearchResultItem, overrideQuality?: QualityId) => {
-    const q = overrideQuality || getItemQuality(item.id);
-    const type = q === 'audio' ? 'audio' : 'video';
-    onPlayPreview(item.id, item.title, type, q, undefined, item.duration_seconds);
-  };
-
   const { toast } = useToast();
   const { addToQueue } = useQueue();
+
+  // Estado para feedback visual inmediato al pulsar Reproducir
+  const [playingId, setPlayingId] = useState<string | null>(null);
+
+  const handlePlayItem = (item: SearchResultItem, overrideQuality?: QualityId) => {
+    setPlayingId(item.id);
+    const q = overrideQuality || getItemQuality(item.id);
+    const type = q === 'audio' ? 'audio' : 'video';
+    toast.info('Iniciando reproductor...', `"${item.title}" (${q === 'audio' ? 'MP3' : q})`, 1800);
+    onPlayPreview(item.id, item.title, type, q, undefined, item.duration_seconds);
+  };
 
   const handleAddToQueue = (item: SearchResultItem, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -464,7 +469,11 @@ export const SearchDownloader: React.FC<SearchDownloaderProps> = ({ onPlayPrevie
               return (
                 <div
                   key={item.id}
-                  className="flex flex-col gap-2 p-3 bg-slate-900/95 border border-slate-800/90 rounded-2xl shadow-sm hover:border-slate-700 transition-all"
+                  className={`flex flex-col gap-2 p-3 bg-slate-900/95 border rounded-2xl shadow-sm transition-all ${
+                    playingId === item.id
+                      ? 'border-rose-500 ring-1 ring-rose-500/50 shadow-rose-950/40'
+                      : 'border-slate-800/90 hover:border-slate-700'
+                  }`}
                 >
                   <div className="flex items-center gap-3">
                     {/* Miniatura compacta 16:9 con duración y tap para play con calidad elegida */}
@@ -592,7 +601,11 @@ export const SearchDownloader: React.FC<SearchDownloaderProps> = ({ onPlayPrevie
               return (
                 <div
                   key={item.id}
-                  className="flex flex-col bg-slate-900 border border-slate-800 hover:border-slate-600/80 rounded-2xl overflow-hidden shadow-lg hover:shadow-2xl hover:shadow-rose-950/20 transition-all duration-300 group hover:-translate-y-1.5"
+                  className={`flex flex-col bg-slate-900 border rounded-2xl overflow-hidden shadow-lg hover:shadow-2xl transition-all duration-300 group hover:-translate-y-1.5 ${
+                    playingId === item.id
+                      ? 'border-rose-500 ring-1 ring-rose-500/50 shadow-rose-950/40'
+                      : 'border-slate-800 hover:border-slate-600/80 hover:shadow-rose-950/20'
+                  }`}
                 >
                   {/* Card Thumbnail */}
                   <div className="relative aspect-video bg-slate-950 overflow-hidden">

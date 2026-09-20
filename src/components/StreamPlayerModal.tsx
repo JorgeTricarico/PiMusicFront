@@ -36,6 +36,11 @@ import {
   updateMediaSessionPositionState,
   clearMediaSession,
 } from '../utils/mediaSession';
+import {
+  saveWatchProgress,
+  getWatchProgress,
+  formatDuration,
+} from '../utils/watchHistory';
 
 export type QualityId = '1080p' | '720p' | '480p' | '360p' | 'audio';
 
@@ -118,6 +123,18 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   const [isTheaterMode, setIsTheaterMode] = useState<boolean>(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState<boolean>(false);
 
+  // Notificación flotante de reanudación y persistencia de progreso
+  const [resumePrompt, setResumePrompt] = useState<{ currentTime: number } | null>(null);
+  const resumeDismissTimeoutRef = useRef<any>(null);
+  const lastSaveTimeRef = useRef<number>(0);
+  const currentTimeRef = useRef<number>(track.initialTime || 0);
+  const durationRef = useRef<number>(track.duration || 0);
+  const qualityRef = useRef<QualityId>(defaultQuality);
+
+  useEffect(() => {
+    qualityRef.current = quality;
+  }, [quality]);
+
   // Relación de aspecto para pantallas móviles modernas (18:9 / 20:9): "Ajustar" vs "Llenar pantalla"
   const [aspectRatioMode, setAspectRatioMode] = useState<'contain' | 'cover'>('contain');
 
@@ -126,7 +143,12 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   const feedbackTimeoutRef = useRef<any>(null);
 
   // Control de gestos táctiles (Swipe Down y Doble Toque Lateral)
-  const touchStartPosRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const touchStartPosRef = useRef<{
+    x: number;
+    y: number;
+    time: number;
+    isDragHandle?: boolean;
+  } | null>(null);
   const lastTapRef = useRef<{ time: number; zone: 'left' | 'right' | 'center' } | null>(null);
   const singleTapTimeoutRef = useRef<any>(null);
   const isSwipingDownRef = useRef<boolean>(false);
@@ -187,12 +209,39 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     setCurrentTime(track.initialTime || 0);
     setDuration(track.duration || 0);
     setStreamStartTime(track.initialTime || 0);
+    currentTimeRef.current = track.initialTime || 0;
+    durationRef.current = track.duration || 0;
+    pendingSeekTimeRef.current = track.initialTime || null;
     setBufferedEnd(0);
     setError(null);
     setIsBuffering(true);
     setIsAutoplayBlocked(false);
     wasPlayingRef.current = true;
   }, [track.videoId, track.streamUrl]);
+
+  // Detección de reanudación al cargar el track si no viene con initialTime explícito
+  useEffect(() => {
+    if (track.initialTime === undefined) {
+      const saved = getWatchProgress(track.videoId);
+      if (saved && saved.currentTime >= 10 && (!saved.duration || saved.currentTime <= saved.duration - 15)) {
+        setResumePrompt({ currentTime: saved.currentTime });
+        if (resumeDismissTimeoutRef.current) clearTimeout(resumeDismissTimeoutRef.current);
+        resumeDismissTimeoutRef.current = setTimeout(() => {
+          setResumePrompt(null);
+        }, 8000);
+      } else {
+        setResumePrompt(null);
+      }
+    } else {
+      setResumePrompt(null);
+    }
+
+    return () => {
+      if (resumeDismissTimeoutRef.current) {
+        clearTimeout(resumeDismissTimeoutRef.current);
+      }
+    };
+  }, [track.videoId, track.initialTime]);
 
   const isAudioOnly = quality === 'audio';
   const isLocal = track.videoId.startsWith('local_') || Boolean(track.streamUrl);
@@ -203,6 +252,31 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     streamStartTime > 0 ? streamStartTime : undefined
   );
   const thumbUrl = isLocal ? '' : `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg`;
+
+  // Función de guardado de progreso multimedia
+  const saveCurrentProgress = useCallback(() => {
+    const el = mediaRef.current;
+    if (!track.videoId) return;
+
+    const currentPos = (isLocal || isAudioOnly)
+      ? (el?.currentTime ?? currentTimeRef.current)
+      : (streamStartTime + (el?.currentTime ?? 0));
+
+    const totalDur = durationRef.current || duration || el?.duration || track.duration || 0;
+    if (totalDur <= 0) return;
+
+    saveWatchProgress({
+      videoId: track.videoId,
+      title: track.title,
+      channel: track.channel || track.artist,
+      thumbnail: thumbUrl || (track.videoId ? `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg` : undefined),
+      currentTime: currentPos,
+      duration: totalDur,
+      quality: qualityRef.current,
+      type: qualityRef.current === 'audio' ? 'audio' : 'video',
+      updatedAt: Date.now(),
+    });
+  }, [track, isLocal, isAudioOnly, streamStartTime, duration, thumbUrl]);
 
   // Cálculo de posición y salud de búfer estilo YouTube
   const displayCurrentTime = isScrubbing && scrubTime !== null ? scrubTime : currentTime;
@@ -246,6 +320,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   // Limpieza estricta al desmontar: liberar MediaSession, orientación, pantalla completa y stream
   useEffect(() => {
     return () => {
+      saveCurrentProgress();
       clearMediaSession();
       if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current);
       if (singleTapTimeoutRef.current) clearTimeout(singleTapTimeoutRef.current);
@@ -288,12 +363,24 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     const sliceTime = el.currentTime || 0;
     const trueTime = (isLocal || isAudioOnly) ? sliceTime : (streamStartTime + sliceTime);
 
+    currentTimeRef.current = trueTime;
+
     if (!isScrubbing) {
       setCurrentTime(trueTime);
     }
 
     if (streamStartTime === 0 && el.duration && isFinite(el.duration) && el.duration !== duration) {
       setDuration(el.duration);
+      durationRef.current = el.duration;
+    } else if (el.duration && isFinite(el.duration)) {
+      durationRef.current = el.duration;
+    }
+
+    // Guardar progreso periódicamente cada 3 segundos
+    const now = Date.now();
+    if (now - lastSaveTimeRef.current >= 3000) {
+      lastSaveTimeRef.current = now;
+      saveCurrentProgress();
     }
 
     // Calcular buffered relativo al timeline total
@@ -359,6 +446,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       el.pause();
       setIsPlaying(false);
       setShowControls(true);
+      saveCurrentProgress();
     } else {
       attemptPlay();
       triggerControlsVisibility();
@@ -409,6 +497,22 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       setStreamStartTime(newStart);
     }
     triggerControlsVisibility();
+  };
+
+  // Acciones de Reanudación desde el Banner Flotante
+  const handleResume = () => {
+    if (resumePrompt) {
+      const targetTime = resumePrompt.currentTime;
+      setResumePrompt(null);
+      if (resumeDismissTimeoutRef.current) clearTimeout(resumeDismissTimeoutRef.current);
+      executeSeek(targetTime);
+      toast.info('Reproducción reanudada', `Continuando en ${formatDuration(targetTime)}`, 2000);
+    }
+  };
+
+  const handleDismissResume = () => {
+    setResumePrompt(null);
+    if (resumeDismissTimeoutRef.current) clearTimeout(resumeDismissTimeoutRef.current);
   };
 
   // Saltar ±10 segundos hacia adelante o atrás
@@ -861,10 +965,22 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     }
     if (e.touches.length > 0) {
       const touch = e.touches[0];
+      const isDragHandle = Boolean(target && (target.closest('[data-testid="drag-handle"]') || target.closest('[data-testid="drag-handle-bar"]')));
+
+      // 1. Zona de exclusión de notificaciones Android:
+      // Si touch.clientY < 75 (área de barra de estado y notch donde se baja el panel de notificaciones de Android),
+      // ignorar por completo el gesto de swipe-down, excepto si el usuario interactúa expresamente con el tirador táctil.
+      if (touch.clientY < 75 && !isDragHandle) {
+        isSwipingDownRef.current = false;
+        touchStartPosRef.current = null;
+        return;
+      }
+
       touchStartPosRef.current = {
         x: touch.clientX,
         y: touch.clientY,
         time: Date.now(),
+        isDragHandle,
       };
       isSwipingDownRef.current = false;
     }
@@ -877,7 +993,8 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     const deltaY = touch.clientY - touchStartPosRef.current.y;
     const deltaX = Math.abs(touch.clientX - touchStartPosRef.current.x);
 
-    if (deltaY > 10 && deltaY > deltaX) {
+    // Requerir que deltaY > deltaX * 1.5 para evitar que scrolls diagonales o de página lo activen accidentalmente
+    if (deltaY > 10 && deltaY > deltaX * 1.5) {
       isSwipingDownRef.current = true;
       if (singleTapTimeoutRef.current) clearTimeout(singleTapTimeoutRef.current);
       lastTapRef.current = null;
@@ -885,7 +1002,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     }
   };
 
-  // Manejador de touchEnd para detectar Swipe Down (> 70px) o Doble Toque Lateral (<40% o >60%)
+  // Manejador de touchEnd para detectar Swipe Down (> 110px) o Doble Toque Lateral (<40% o >60%)
   const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
     lastTouchTimeRef.current = Date.now();
     const start = touchStartPosRef.current;
@@ -902,15 +1019,26 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     const deltaX = Math.abs(touch.clientX - start.x);
     const totalDistance = Math.hypot(touch.clientX - start.x, touch.clientY - start.y);
 
-    // 1. Gesto Swipe Down (> 70px vertical): minimiza suavemente al MiniPlayer
-    if (deltaY > 70 && deltaY > deltaX) {
+    // 1. Gesto Swipe Down (al menos deltaY > 110px y deltaY > deltaX * 1.5): minimiza suavemente al MiniPlayer
+    const isFromDragHandle = Boolean(start.isDragHandle);
+    const isSwipeDown =
+      (deltaY > 110 && deltaY > deltaX * 1.5) ||
+      (isFromDragHandle && deltaY > 50 && deltaY > deltaX * 1.5);
+
+    if (isSwipeDown) {
       if (singleTapTimeoutRef.current) clearTimeout(singleTapTimeoutRef.current);
       lastTapRef.current = null;
       handleMinimize();
       return;
     }
 
-    // Si hubo arrastre > 15px pero no alcanzó los 70px, no considerarlo tap
+    // Si la interacción inició en el tirador pero no alcanzó el umbral de arrastre,
+    // evitar que se interprete como toque de control en el reproductor (el onClick se encarga del tap)
+    if (isFromDragHandle) {
+      return;
+    }
+
+    // Si hubo arrastre > 15px pero no alcanzó los 110px, no considerarlo tap
     if (totalDistance > 15) {
       return;
     }
@@ -1207,6 +1335,36 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
           </div>
         )}
 
+        {/* BANNER FLOTANTE DE REANUDACIÓN DE REPRODUCCIÓN ("CONTINUAR VIENDO") */}
+        {resumePrompt && (
+          <div
+            data-testid="resume-prompt-banner"
+            className="absolute top-14 left-4 right-4 sm:left-auto sm:right-6 z-40 flex items-center justify-between gap-3 bg-slate-900/95 border border-rose-500/50 backdrop-blur-md px-4 py-2.5 rounded-2xl shadow-2xl animate-fadeIn"
+          >
+            <div className="flex items-center gap-2.5 text-xs sm:text-sm text-white font-medium">
+              <RotateCcw className="w-4 h-4 text-rose-400 flex-shrink-0" />
+              <span>
+                ¿Reanudar en <strong className="text-rose-400 font-mono">{formatDuration(resumePrompt.currentTime)}</strong>?
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleResume}
+                className="px-3 py-1 bg-rose-600 hover:bg-rose-500 active:scale-95 text-white font-semibold text-xs rounded-xl shadow transition-all"
+              >
+                Reanudar
+              </button>
+              <button
+                onClick={handleDismissResume}
+                className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors"
+                title="Ignorar y reproducir desde el inicio"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* OVERLAY DE AUTOPLAY BLOQUEADO EN MÓVILES */}
         {isAutoplayBlocked && (
           <div className="absolute inset-0 z-25 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm pointer-events-auto p-4">
@@ -1257,29 +1415,52 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
               : 'opacity-0'
           }`}
         >
-          {/* BARRA SUPERIOR (GRADIENTE CINEMATOGRÁFICO) */}
-          <div className="p-3 sm:p-4 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex items-center justify-between pointer-events-auto">
-            <div className="flex items-center gap-2 min-w-0 pr-2">
-              {/* BOTÓN COLAPSAR A MINI-REPRODUCTOR (CHEVRON DOWN YOUTUBE) */}
-              <button
-                onClick={handleMinimize}
-                className="p-2 rounded-full hover:bg-white/10 text-white transition-all active:scale-90"
-                title="Minimizar reproductor"
-              >
-                <ChevronDown className="w-6 h-6" />
-              </button>
+          {/* BARRA SUPERIOR (GRADIENTE CINEMATOGRÁFICO) CON TIRADOR DE ARRASTRE */}
+          <div className="px-3 pt-1 pb-3 sm:px-4 sm:pt-1.5 sm:pb-4 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex flex-col pointer-events-auto">
+            {/* TIRADOR VISUAL DE ARRASTRE (DRAG HANDLE) */}
+            <div
+              data-testid="drag-handle"
+              onClick={handleMinimize}
+              className="w-full flex items-center justify-center cursor-grab active:cursor-grabbing py-0.5 touch-none select-none"
+              title="Arrastrar hacia abajo o presionar para minimizar"
+              role="button"
+              tabIndex={0}
+              aria-label="Minimizar reproductor"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleMinimize();
+                }
+              }}
+            >
+              <div
+                data-testid="drag-handle-bar"
+                className="w-10 h-1 bg-white/40 hover:bg-white/60 rounded-full mx-auto my-1.5 transition-all"
+              />
+            </div>
 
-              <div className="min-w-0">
-                <h2 className="text-xs sm:text-sm font-bold text-white truncate max-w-xs sm:max-w-md md:max-w-lg">
-                  {track.title}
-                </h2>
-                <div className="flex items-center gap-2 text-[10px] text-slate-300 font-mono">
-                  <span>Sin Publicidad</span>
-                  <span>•</span>
-                  <span className="text-rose-400 font-semibold">{quality.toUpperCase()}</span>
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-2 min-w-0 pr-2">
+                {/* BOTÓN COLAPSAR A MINI-REPRODUCTOR (CHEVRON DOWN YOUTUBE) */}
+                <button
+                  onClick={handleMinimize}
+                  className="p-2 rounded-full hover:bg-white/10 text-white transition-all active:scale-90"
+                  title="Minimizar reproductor"
+                >
+                  <ChevronDown className="w-6 h-6" />
+                </button>
+
+                <div className="min-w-0">
+                  <h2 className="text-xs sm:text-sm font-bold text-white truncate max-w-xs sm:max-w-md md:max-w-lg">
+                    {track.title}
+                  </h2>
+                  <div className="flex items-center gap-2 text-[10px] text-slate-300 font-mono">
+                    <span>Sin Publicidad</span>
+                    <span>•</span>
+                    <span className="text-rose-400 font-semibold">{quality.toUpperCase()}</span>
+                  </div>
                 </div>
               </div>
-            </div>
 
             <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
               {/* BOTÓN FORZAR MODO HORIZONTAL EN MÓVIL (SOLO EN FULLSCREEN PORTRAIT) */}
@@ -1393,6 +1574,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
               </button>
             </div>
           </div>
+        </div>
 
           {/* CONTROLES TÁCTILES CENTRALES: PLAY/PAUSE O SPINNER DE BUFFERING */}
           <div className="flex flex-col items-center justify-center gap-3 pointer-events-auto my-auto">
