@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link2, Clipboard, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import type { VideoInfoResponse } from '../api/client';
 import { getVideoInfo } from '../api/client';
@@ -23,6 +23,7 @@ export const LinkDownloader: React.FC<LinkDownloaderProps> = ({ onPlayPreview, i
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoInfo, setVideoInfo] = useState<VideoInfoResponse | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const { toast } = useToast();
 
@@ -33,16 +34,50 @@ export const LinkDownloader: React.FC<LinkDownloaderProps> = ({ onPlayPreview, i
     }
   }, [initialUrl]);
 
+  const handleInputPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const pasted = e.clipboardData?.getData('text');
+    if (pasted && pasted.trim()) {
+      const clean = pasted.trim();
+      setUrl(clean);
+      toast.info('Enlace detectado', 'Iniciando análisis del video...');
+      triggerAnalyze(clean);
+    }
+  };
+
   const handlePasteClipboard = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) {
-        setUrl(text.trim());
-        toast.info('Enlace pegado', 'Iniciando análisis del video...');
-        triggerAnalyze(text.trim());
+    // 1. Intentar la API nativa de portapapeles (funciona en HTTPS o localhost)
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text && text.trim()) {
+          const clean = text.trim();
+          setUrl(clean);
+          toast.info('Enlace pegado', 'Iniciando análisis del video...');
+          triggerAnalyze(clean);
+          return;
+        }
+      } catch (err) {
+        console.warn('Fallo al leer portapapeles vía API:', err);
       }
-    } catch {
-      toast.warning('Permiso requerido', 'Pega el enlace manualmente en la casilla de texto.');
+    }
+
+    // 2. Fallback: Enfocar el input inmediatamente para invocar el botón de pegar del teclado nativo
+    inputRef.current?.focus();
+    inputRef.current?.select();
+
+    const isHttpInsecure = typeof window !== 'undefined' && !window.isSecureContext;
+    if (isHttpInsecure) {
+      toast.warning(
+        'Conexión HTTP: Bloqueo de seguridad',
+        'El navegador bloquea la lectura automática en HTTP. Toca "Pegar" en tu teclado o mantén presionado el campo.',
+        6000
+      );
+    } else {
+      toast.warning(
+        'Permiso de portapapeles',
+        'Permite el acceso al portapapeles en tu navegador o pega directamente con tu teclado.',
+        5000
+      );
     }
   };
 
@@ -103,9 +138,11 @@ export const LinkDownloader: React.FC<LinkDownloaderProps> = ({ onPlayPreview, i
             </div>
 
             <input
+              ref={inputRef}
               type="text"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
+              onPaste={handleInputPaste}
               placeholder="Pega el enlace de YouTube (ej. https://youtu.be/...)"
               className="w-full bg-transparent text-sm sm:text-base text-white placeholder-slate-500 outline-none px-2 py-2 min-w-0"
             />
