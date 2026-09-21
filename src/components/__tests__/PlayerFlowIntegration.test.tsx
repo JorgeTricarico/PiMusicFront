@@ -53,6 +53,7 @@ const TestFlowApp: React.FC = () => {
     currentTime: number;
     quality: QualityId;
     isPlaying: boolean;
+    duration?: number;
   }) => {
     setStreamTrack(null);
     setMiniTrack({
@@ -62,6 +63,7 @@ const TestFlowApp: React.FC = () => {
       quality: state.quality,
       type: state.quality === 'audio' ? 'audio' : 'video',
       isPlaying: state.isPlaying,
+      duration: state.duration,
     });
   };
 

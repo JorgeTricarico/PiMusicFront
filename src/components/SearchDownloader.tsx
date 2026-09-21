@@ -5,6 +5,7 @@ import { searchYouTube, getVideoInfo } from '../api/client';
 import { FormatCard } from './FormatCard';
 import { useToast } from '../context/ToastContext';
 import { useQueue } from '../context/QueueContext';
+import { parseDuration } from '../utils/watchHistory';
 
 import type { QualityId } from './StreamPlayerModal';
 
@@ -149,18 +150,20 @@ export const SearchDownloader: React.FC<SearchDownloaderProps> = ({ onPlayPrevie
     setPlayingId(item.id);
     const q = overrideQuality || getItemQuality(item.id);
     const type = q === 'audio' ? 'audio' : 'video';
+    const durSec = item.duration_seconds || (item.duration ? parseDuration(item.duration) : undefined);
     toast.info('Iniciando reproductor...', `"${item.title}" (${q === 'audio' ? 'MP3' : q})`, 1800);
-    onPlayPreview(item.id, item.title, type, q, undefined, item.duration_seconds);
+    onPlayPreview(item.id, item.title, type, q, undefined, durSec);
   };
 
   const handleAddToQueue = (item: SearchResultItem, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     const q = getItemQuality(item.id);
     const type = q === 'audio' ? 'audio' : 'video';
+    const durSec = item.duration_seconds || (item.duration ? parseDuration(item.duration) : undefined);
     addToQueue({
       videoId: item.id,
       title: item.title,
-      duration: item.duration_seconds,
+      duration: durSec,
       initialQuality: q,
       initialType: type,
     });

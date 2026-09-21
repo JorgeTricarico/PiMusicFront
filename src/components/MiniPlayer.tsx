@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Play, Pause, X, Maximize2, Loader2, Music2, Film, SkipBack, SkipForward } from 'lucide-react';
-import { getStreamMediaUrl } from '../api/client';
+import { getStreamMediaUrl, getVideoInfo } from '../api/client';
 import type { QualityId } from './StreamPlayerModal';
 import { useQueue } from '../context/QueueContext';
 import {
@@ -40,13 +40,47 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
   onTrackChange,
 }) => {
   const currentQuality: QualityId = track.quality || (track.type === 'video' ? '480p' : 'audio');
+  const isAudio = track.type === 'audio' || currentQuality === 'audio';
+  const isLocal = track.videoId.startsWith('local_') || Boolean(track.streamUrl);
   const [isPlaying, setIsPlaying] = useState(track.isPlaying ?? false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [isAutoplayBlocked, setIsAutoplayBlocked] = useState(false);
+  const initialDuration = track.duration !== undefined ? parseDuration(track.duration) : 0;
   const [streamStartTime] = useState<number>(track.currentTime || 0);
   const [currentTime, setCurrentTime] = useState(track.currentTime || 0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState<number>(initialDuration);
   const [bufferedEnd, setBufferedEnd] = useState(0);
+
+  // Sincronizar si la duración es actualizada en segundo plano por el padre
+  useEffect(() => {
+    if (track.duration !== undefined) {
+      const parsed = parseDuration(track.duration);
+      if (parsed > 0) {
+        setDuration(parsed);
+      }
+    }
+  }, [track.duration]);
+
+  // Recuperar duración total de YouTube si el track no la traía
+  useEffect(() => {
+    if (!isLocal && duration <= 0 && track.videoId && !track.videoId.startsWith('local_')) {
+      try {
+        const res = getVideoInfo(track.videoId);
+        if (res && typeof res.then === 'function') {
+          res
+            .then((info) => {
+              if (info) {
+                const d = parseDuration(info.duration_seconds || info.duration);
+                if (d > 0) {
+                  setDuration(d);
+                }
+              }
+            })
+            .catch(() => {});
+        }
+      } catch {}
+    }
+  }, [track.videoId, isLocal, duration]);
 
   const mediaRef = useRef<HTMLMediaElement | null>(null);
   const { queue, canSkipNext, canSkipPrev, skipToNext, skipToPrev, handleTrackEnded } = useQueue();
@@ -99,8 +133,6 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
     }
   };
 
-  const isAudio = track.type === 'audio' || currentQuality === 'audio';
-  const isLocal = track.videoId.startsWith('local_') || Boolean(track.streamUrl);
   const streamUrl = track.streamUrl || getStreamMediaUrl(
     track.videoId,
     isAudio ? 'audio' : 'video',
@@ -140,8 +172,8 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
     const dur = el.duration || 0;
     const trueTime = (isLocal || isAudio) ? cur : (streamStartTime + cur);
     setCurrentTime(trueTime);
-    if (dur && dur !== duration) {
-      setDuration((isLocal || isAudio) ? dur : (streamStartTime + dur));
+    if (isLocal && dur > 0 && isFinite(dur) && dur !== duration) {
+      setDuration(dur);
     }
 
     const b = el.buffered;

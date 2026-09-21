@@ -87,6 +87,7 @@ interface StreamPlayerModalProps {
     currentTime: number;
     quality: QualityId;
     isPlaying: boolean;
+    duration?: number;
   }) => void;
   onTrackChange?: (track: StreamPlayerTrack) => void;
 }
@@ -275,18 +276,23 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     }
 
     // Fallback background fetch: si duration es 0 o falsy, recuperarla inmediatamente con getVideoInfo
-    if (!track.duration && track.videoId && !track.videoId.startsWith('local_')) {
-      getVideoInfo(track.videoId)
-        .then((info) => {
-          if (info && info.duration) {
-            const parsedDur = parseDuration(info.duration);
-            if (parsedDur > 0) {
-              setDuration(parsedDur);
-              durationRef.current = parsedDur;
-            }
-          }
-        })
-        .catch(() => {});
+    if ((!parsedDur || parsedDur <= 0) && track.videoId && !track.videoId.startsWith('local_')) {
+      try {
+        const res = getVideoInfo(track.videoId);
+        if (res && typeof res.then === 'function') {
+          res
+            .then((info) => {
+              if (info) {
+                const fetchedDur = parseDuration(info.duration_seconds || info.duration);
+                if (fetchedDur > 0) {
+                  setDuration(fetchedDur);
+                  durationRef.current = fetchedDur;
+                }
+              }
+            })
+            .catch(() => {});
+        }
+      } catch {}
     }
 
     return () => {
@@ -295,6 +301,15 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       }
     };
   }, [track.videoId, track.streamUrl]);
+
+  // Sincronizar duración si el componente padre la actualiza posteriormente
+  useEffect(() => {
+    const parsedDur = parseDuration(track.duration);
+    if (parsedDur > 0) {
+      setDuration(parsedDur);
+      durationRef.current = parsedDur;
+    }
+  }, [track.duration]);
 
   const isAudioOnly = quality === 'audio';
   const isLocal = track.videoId.startsWith('local_') || Boolean(track.streamUrl?.includes('/library/'));
@@ -460,11 +475,16 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       setCurrentTime(trueTime);
     }
 
-    if (streamStartTime === 0 && el.duration && isFinite(el.duration) && el.duration !== duration) {
-      setDuration(el.duration);
-      durationRef.current = el.duration;
-    } else if (el.duration && isFinite(el.duration)) {
-      durationRef.current = el.duration;
+    // Para archivos locales, el elemento multimedia conoce la duración exacta del archivo.
+    // Para streams remotos de YouTube (fMP4/AAC), el elemento <video> solo conoce el búfer descargado;
+    // la duración total debe provenir de los metadatos de YouTube para que el usuario pueda navegar toda la línea temporal.
+    if (isLocal && el.duration && isFinite(el.duration) && el.duration > 0) {
+      if (el.duration !== duration) {
+        setDuration(el.duration);
+        durationRef.current = el.duration;
+      }
+    } else if ((!duration || duration <= 0) && durationRef.current > 0) {
+      setDuration(durationRef.current);
     }
 
     // Guardar progreso periódicamente cada 3 segundos
@@ -736,10 +756,21 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     const el = mediaRef.current;
     if (!el) return;
 
-    if (streamStartTime === 0 && el.duration && isFinite(el.duration)) {
+    if (isLocal && el.duration && isFinite(el.duration) && el.duration > 0) {
       setDuration(el.duration);
-    } else if (!duration && el.duration && isFinite(el.duration)) {
-      setDuration(streamStartTime + el.duration);
+      durationRef.current = el.duration;
+    } else if ((!duration || duration <= 0) && track.videoId && !track.videoId.startsWith('local_')) {
+      getVideoInfo(track.videoId)
+        .then((info) => {
+          if (info) {
+            const fetchedDur = parseDuration(info.duration_seconds || info.duration);
+            if (fetchedDur > 0) {
+              setDuration(fetchedDur);
+              durationRef.current = fetchedDur;
+            }
+          }
+        })
+        .catch(() => {});
     }
 
     // Restaurar posición si había una pendiente tras cambio de calidad o seek fraccional
@@ -1147,12 +1178,14 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       const currentPos = (isLocal || isAudioOnly)
         ? (mediaRef.current?.currentTime || currentTime)
         : (streamStartTime + (mediaRef.current?.currentTime || 0));
+      const currentDur = duration || durationRef.current || (track.duration ? parseDuration(track.duration) : undefined);
       onMinimize({
         videoId: track.videoId,
         title: track.title,
         currentTime: currentPos,
         quality,
         isPlaying,
+        duration: (currentDur && currentDur > 0) ? currentDur : undefined,
       });
     }
     onClose();
@@ -2051,7 +2084,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
               {/* Lado Izquierdo: Tiempos, Volumen */}
               <div className="flex items-center gap-3">
                 <span className="font-mono text-[11px] text-slate-200">
-                  {formatTime(displayCurrentTime)} / {formatTime(duration)}
+                  {formatTime(displayCurrentTime)} / {duration > 0 ? formatTime(duration) : '--:--'}
                 </span>
 
                 {/* Volumen (Oculto en móvil) */}

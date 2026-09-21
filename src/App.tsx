@@ -163,8 +163,9 @@ function AppContent() {
     currentTime: number;
     quality: QualityId;
     isPlaying: boolean;
+    duration?: number;
   }) => {
-    const currentDur = streamTrack?.duration ? parseDuration(streamTrack.duration) : undefined;
+    const currentDur = state.duration || (streamTrack?.duration ? parseDuration(streamTrack.duration) : undefined);
     setStreamTrack(null);
     setActivePlayer({
       videoId: state.videoId,

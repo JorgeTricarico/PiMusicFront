@@ -20,6 +20,7 @@ import type { DownloadTarget } from './DownloadConfirmModal';
 import { SaveServerConfirmModal } from './SaveServerConfirmModal';
 import type { SaveServerTarget } from './SaveServerConfirmModal';
 import { getDownloadEstimate } from '../utils/downloadMetrics';
+import { parseDuration } from '../utils/watchHistory';
 
 import type { QualityId } from './StreamPlayerModal';
 
@@ -40,6 +41,8 @@ export const FormatCard: React.FC<FormatCardProps> = ({ info, onPlayPreview }) =
   const [selectedPreviewQuality, setSelectedPreviewQuality] = useState<QualityId>('480p');
   const [savingQuality, setSavingQuality] = useState<string | null>(null);
   const [savedSuccess, setSavedSuccess] = useState<string | null>(null);
+
+  const resolvedDuration = info.duration_seconds || (info.duration ? parseDuration(info.duration) : undefined);
 
   // Modales de confirmación
   const [downloadModalTarget, setDownloadModalTarget] = useState<DownloadTarget | null>(null);
@@ -150,7 +153,7 @@ export const FormatCard: React.FC<FormatCardProps> = ({ info, onPlayPreview }) =
                   isAudio ? 'audio' : 'video',
                   selectedPreviewQuality,
                   undefined,
-                  info.duration_seconds
+                  resolvedDuration
                 );
               }}
               className="w-14 h-14 rounded-full bg-rose-600/90 text-white flex items-center justify-center shadow-xl shadow-rose-600/40 hover:scale-110 active:scale-95 transition-all"
@@ -221,7 +224,7 @@ export const FormatCard: React.FC<FormatCardProps> = ({ info, onPlayPreview }) =
                   isAudio ? 'audio' : 'video',
                   selectedPreviewQuality,
                   undefined,
-                  info.duration_seconds
+                  resolvedDuration
                 );
               }}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md shadow-rose-600/30 transition-all active:scale-95"
@@ -240,7 +243,7 @@ export const FormatCard: React.FC<FormatCardProps> = ({ info, onPlayPreview }) =
               </span>
             </button>
             <button
-              onClick={() => onPlayPreview(info.id, info.title, 'audio', 'audio', undefined, info.duration_seconds)}
+              onClick={() => onPlayPreview(info.id, info.title, 'audio', 'audio', undefined, resolvedDuration)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-700 text-xs font-semibold text-slate-200 transition-all active:scale-95"
             >
               <Music2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -343,7 +346,7 @@ export const FormatCard: React.FC<FormatCardProps> = ({ info, onPlayPreview }) =
                   <div className="flex items-center gap-2 flex-shrink-0">
                     {/* Botón Ver Stream sin publicidad */}
                     <button
-                      onClick={() => onPlayPreview(info.id, info.title, 'video', opt.quality as QualityId, undefined, info.duration_seconds)}
+                      onClick={() => onPlayPreview(info.id, info.title, 'video', opt.quality as QualityId, undefined, resolvedDuration)}
                       className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl font-semibold text-xs border border-slate-700 bg-slate-800/90 hover:bg-slate-700 text-slate-200 hover:text-white transition-all active:scale-95 min-h-[42px]"
                       title={`Reproducir ${opt.quality} en streaming directo sin publicidad`}
                     >
@@ -436,7 +439,7 @@ export const FormatCard: React.FC<FormatCardProps> = ({ info, onPlayPreview }) =
                   <div className="flex items-center gap-2 flex-shrink-0">
                     {/* Botón Escuchar Stream de Audio */}
                     <button
-                      onClick={() => onPlayPreview(info.id, info.title, 'audio', 'audio', undefined, info.duration_seconds)}
+                      onClick={() => onPlayPreview(info.id, info.title, 'audio', 'audio', undefined, resolvedDuration)}
                       className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl font-semibold text-xs border border-slate-700 bg-slate-800/90 hover:bg-slate-700 text-slate-200 hover:text-white transition-all active:scale-95 min-h-[42px]"
                       title="Escuchar stream de audio directo"
                     >
