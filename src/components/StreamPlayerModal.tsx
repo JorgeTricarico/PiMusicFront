@@ -132,7 +132,15 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   const [showShortcutsModal, setShowShortcutsModal] = useState<boolean>(false);
 
   // Picture-in-Picture nativo (mini pantalla flotante del sistema)
-  const [isPipSupported] = useState<boolean>(() => isPictureInPictureSupported());
+  const [isPipSupported] = useState<boolean>(() => {
+    if (typeof document !== 'undefined') {
+      if (isPictureInPictureSupported()) return true;
+    }
+    if (typeof HTMLVideoElement !== 'undefined' && 'requestPictureInPicture' in HTMLVideoElement.prototype) {
+      return true;
+    }
+    return false;
+  });
   const [isPipActive, setIsPipActive] = useState<boolean>(() => {
     if (typeof document !== 'undefined') {
       return Boolean(document.pictureInPictureElement);
@@ -226,17 +234,44 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     const defaultQ: QualityId = track.initialQuality || (track.initialType === 'audio' ? 'audio' : '480p');
     const parsedDur = parseDuration(track.duration);
     setQuality(defaultQ);
-    setCurrentTime(track.initialTime || 0);
+
+    // Detección de progreso previo para reanudación instantánea estilo YouTube / Netflix
+    const saved = track.initialTime === undefined ? getWatchProgress(track.videoId) : null;
+    const canResume = Boolean(
+      saved &&
+      saved.currentTime >= 5 &&
+      (!saved.duration || saved.currentTime <= saved.duration - 10)
+    );
+    const startSec = track.initialTime !== undefined
+      ? track.initialTime
+      : canResume && saved
+        ? Math.floor(saved.currentTime)
+        : 0;
+
+    setCurrentTime(startSec);
     setDuration(parsedDur);
-    setStreamStartTime(track.initialTime || 0);
-    currentTimeRef.current = track.initialTime || 0;
+    setStreamStartTime(startSec);
+    currentTimeRef.current = startSec;
     durationRef.current = parsedDur;
-    pendingSeekTimeRef.current = track.initialTime || null;
+    pendingSeekTimeRef.current = startSec > 0 ? startSec : null;
+    fractionalSeekRef.current = 0;
+    setSeekNonce(0);
     setBufferedEnd(0);
     setError(null);
     setIsBuffering(true);
     setIsAutoplayBlocked(false);
     wasPlayingRef.current = true;
+
+    if (canResume && saved && track.initialTime === undefined) {
+      setResumePrompt({ currentTime: saved.currentTime });
+      toast.info('Continuando reproducción', `Reanudando desde ${formatDuration(saved.currentTime)}`, 3500);
+      if (resumeDismissTimeoutRef.current) clearTimeout(resumeDismissTimeoutRef.current);
+      resumeDismissTimeoutRef.current = setTimeout(() => {
+        setResumePrompt(null);
+      }, 10000);
+    } else {
+      setResumePrompt(null);
+    }
 
     // Fallback background fetch: si duration es 0 o falsy, recuperarla inmediatamente con getVideoInfo
     if (!track.duration && track.videoId && !track.videoId.startsWith('local_')) {
@@ -252,31 +287,13 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
         })
         .catch(() => {});
     }
-  }, [track.videoId, track.streamUrl]);
-
-  // Detección de reanudación al cargar el track si no viene con initialTime explícito
-  useEffect(() => {
-    if (track.initialTime === undefined) {
-      const saved = getWatchProgress(track.videoId);
-      if (saved && saved.currentTime >= 10 && (!saved.duration || saved.currentTime <= saved.duration - 15)) {
-        setResumePrompt({ currentTime: saved.currentTime });
-        if (resumeDismissTimeoutRef.current) clearTimeout(resumeDismissTimeoutRef.current);
-        resumeDismissTimeoutRef.current = setTimeout(() => {
-          setResumePrompt(null);
-        }, 8000);
-      } else {
-        setResumePrompt(null);
-      }
-    } else {
-      setResumePrompt(null);
-    }
 
     return () => {
       if (resumeDismissTimeoutRef.current) {
         clearTimeout(resumeDismissTimeoutRef.current);
       }
     };
-  }, [track.videoId, track.initialTime]);
+  }, [track.videoId, track.streamUrl]);
 
   const isAudioOnly = quality === 'audio';
   const isLocal = track.videoId.startsWith('local_') || Boolean(track.streamUrl?.includes('/library/'));
@@ -391,6 +408,41 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   useEffect(() => {
     updateMediaSessionPlaybackState(isPlaying ? 'playing' : 'paused');
   }, [isPlaying]);
+
+  // Conexión con MediaSession API: Botones físicos, auriculares y NOTIFICACIONES NATIVAS DE ANDROID
+  useEffect(() => {
+    setMediaSessionActionHandlers({
+      play: () => attemptPlay(),
+      pause: () => {
+        const el = mediaRef.current;
+        if (el) el.pause();
+        setIsPlaying(false);
+        setShowControls(true);
+        saveCurrentProgress();
+      },
+      seekbackward: (details) => skipSeconds(-(details?.seekOffset || 10)),
+      seekforward: (details) => skipSeconds(details?.seekOffset || 10),
+      seekto: (details) => {
+        if (details.seekTime !== undefined) executeSeek(details.seekTime);
+      },
+      previoustrack: queue.length > 0 && canSkipPrev ? handlePrevTrack : undefined,
+      nexttrack: queue.length > 0 && canSkipNext ? handleNextTrack : undefined,
+      enterpictureinpicture: () => togglePictureInPicture(),
+    });
+  }, [canSkipPrev, canSkipNext, queue.length, isLocal, isAudioOnly, duration, streamStartTime, isPlaying]);
+
+  // Persistencia de progreso ante cierre/suspensión de pestaña en móvil y desktop
+  useEffect(() => {
+    const handleSaveOnExit = () => {
+      saveCurrentProgress();
+    };
+    window.addEventListener('beforeunload', handleSaveOnExit);
+    window.addEventListener('pagehide', handleSaveOnExit);
+    return () => {
+      window.removeEventListener('beforeunload', handleSaveOnExit);
+      window.removeEventListener('pagehide', handleSaveOnExit);
+    };
+  }, [saveCurrentProgress]);
 
   // Actualización de búfer y tiempo
   const handleTimeUpdate = () => {
@@ -536,6 +588,9 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
         attemptPlay();
       }
     } else {
+      // Evitar flood si ya estamos esperando un seek out-of-buffer
+      if (isBuffering && fractionalSeekRef.current !== 0) return;
+
       // Salto fuera del búfer (adelantar a cualquier minuto o retroceder antes de streamStartTime):
       // Solicitud al servidor para iniciar streaming desde boundedTime
       setIsBuffering(true);
@@ -590,6 +645,10 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!areControlsVisible) {
+      triggerControlsVisibility();
+      return;
+    }
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
@@ -1053,11 +1112,30 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       if (!el) return;
 
       if (document.hidden) {
-        if (isPlaying) {
+        if (isPlaying || wasPlayingRef.current) {
+          wasPlayingRef.current = true;
           updateMediaSessionPlaybackState('playing');
+
+          // Si es video, habilitar autoPictureInPicture
+          if (!isAudioOnly && el instanceof HTMLVideoElement) {
+            try {
+              (el as any).autoPictureInPicture = true;
+            } catch {}
+          }
+          // En Chrome Android, intentar reanudar inmediatamente para evitar corte de audio
+          setTimeout(() => {
+            if (wasPlayingRef.current && el.paused) {
+              el.play().catch(() => {});
+            }
+          }, 50);
         }
       } else {
-        setIsPlaying(!el.paused);
+        // Al regresar a la app de Chrome
+        if (wasPlayingRef.current && el.paused) {
+          attemptPlay();
+        } else {
+          setIsPlaying(!el.paused);
+        }
         const trueTime = (isLocal || isAudioOnly)
           ? el.currentTime
           : (streamStartTime + el.currentTime);
@@ -1354,11 +1432,11 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
           transform: swipeOffset > 0 ? `translateY(${swipeOffset}px)` : undefined,
           transition: isSwipingDownRef.current ? 'none' : 'transform 0.2s ease-out',
         }}
-        className={`bg-black flex flex-col justify-center items-center relative overflow-hidden transition-all duration-300 ${
+        className={`touch-none bg-black flex flex-col justify-center items-center relative overflow-hidden transition-all duration-300 ${
           isFullscreen
             ? isDevicePortrait && forceLandscape
-              ? 'fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[100vh] h-[100vw] rotate-90 origin-center z-[9999] rounded-none border-none'
-              : 'w-screen h-screen max-w-none max-h-none rounded-none border-none z-50'
+              ? 'fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[100dvh] h-[100dvw] rotate-90 origin-center z-[9999] rounded-none border-none'
+              : 'w-screen h-[100dvh] max-w-none max-h-none rounded-none border-none z-50'
             : isTheaterMode
               ? 'relative w-full max-w-7xl mx-auto aspect-video rounded-xl sm:rounded-2xl border border-slate-800 shadow-2xl overflow-hidden'
               : 'relative w-full max-w-4xl mx-auto aspect-video rounded-xl sm:rounded-2xl border border-slate-800 shadow-2xl overflow-hidden'
@@ -1392,7 +1470,18 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
               }}
               onWaiting={() => setIsBuffering(true)}
               onPlaying={() => { setIsBuffering(false); setIsPlaying(true); }}
-              onPause={() => setIsPlaying(false)}
+              onPause={() => {
+                if (document.hidden && wasPlayingRef.current) {
+                  updateMediaSessionPlaybackState('playing');
+                  setTimeout(() => {
+                    if (wasPlayingRef.current && mediaRef.current?.paused) {
+                      mediaRef.current.play().catch(() => {});
+                    }
+                  }, 100);
+                  return;
+                }
+                setIsPlaying(false);
+              }}
               onEnded={handleMediaEnded}
               onError={() => {
                 console.warn('Fallo en reproducción de stream en calidad:', quality);
@@ -1410,7 +1499,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
                   setError('No se pudo reproducir este formato. Prueba cambiar a Solo Audio o descarga el video.');
                 }
               }}
-              className={`w-full h-full cursor-pointer transition-all duration-200 ${
+              className={`w-full h-full cursor-pointer touch-manipulation transition-all duration-200 ${
                 aspectRatioMode === 'cover' ? 'object-cover' : 'object-contain'
               }`}
               onClick={handleVideoClick}
@@ -1420,7 +1509,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
             /* Modo Solo Audio con Carátula */
             <div
               onClick={handleVideoClick}
-              className="w-full h-full flex flex-col items-center justify-center p-6 bg-gradient-to-b from-slate-900 via-slate-950 to-black cursor-pointer"
+              className="w-full h-full flex flex-col items-center justify-center p-6 bg-gradient-to-b from-slate-900 via-slate-950 to-black cursor-pointer touch-manipulation"
             >
               <audio
                 ref={(el) => { (mediaRef as any).current = el; }}
@@ -1575,10 +1664,10 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
         {/* ============================================================ */}
         <div
           data-testid="controls-overlay"
-          className={`absolute inset-0 z-30 flex flex-col justify-between transition-opacity duration-300 pointer-events-none ${
+          className={`absolute inset-0 z-30 flex flex-col justify-between transition-all duration-300 ${
             areControlsVisible
-              ? 'opacity-100'
-              : 'opacity-0'
+              ? 'opacity-100 pointer-events-auto visible'
+              : 'opacity-0 pointer-events-none invisible'
           }`}
           aria-hidden={!areControlsVisible}
           inert={!areControlsVisible ? true : undefined}
@@ -1724,6 +1813,23 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* BOTÓN PICTURE-IN-PICTURE RÁPIDO EN CABECERA */}
+              {!isAudioOnly && isPipSupported && (
+                <button
+                  onClick={togglePictureInPicture}
+                  data-testid="header-pip-btn"
+                  className={`p-2 rounded-xl border transition-all active:scale-95 flex items-center justify-center ${
+                    isPipActive
+                      ? 'bg-rose-600 border-rose-500 text-white shadow-lg shadow-rose-500/30'
+                      : 'bg-black/60 hover:bg-black/80 border-white/20 text-slate-300 hover:text-white'
+                  }`}
+                  title={isPipActive ? 'Salir de pantalla flotante (P)' : 'Pantalla flotante / PiP (P)'}
+                  aria-label="Pantalla flotante"
+                >
+                  <PictureInPicture2 className={`w-4 h-4 ${isPipActive ? 'text-white' : 'text-rose-400'}`} />
+                </button>
+              )}
 
               {/* BOTÓN GUÍA DE ATAJOS DE TECLADO */}
               <button

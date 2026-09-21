@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sparkles, Link2, Search, Settings, FolderDown } from 'lucide-react';
 
 interface BottomNavProps {
@@ -14,6 +14,21 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   onOpenSettings,
   isBackendConnected,
 }) => {
+  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.visualViewport) return;
+    const handleResize = () => {
+      if (window.visualViewport) {
+        setIsKeyboardOpen(window.visualViewport.height < window.innerHeight * 0.75);
+      }
+    };
+    window.visualViewport.addEventListener('resize', handleResize);
+    return () => window.visualViewport?.removeEventListener('resize', handleResize);
+  }, []);
+
+  if (isKeyboardOpen) return null;
+
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-xl border-t border-slate-800/80 px-1 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-2xl">
       <div className="grid grid-cols-5 gap-0.5 max-w-md mx-auto items-center">

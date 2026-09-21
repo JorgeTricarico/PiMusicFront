@@ -43,6 +43,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
   const [isPlaying, setIsPlaying] = useState(track.isPlaying ?? false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [isAutoplayBlocked, setIsAutoplayBlocked] = useState(false);
+  const [streamStartTime] = useState<number>(track.currentTime || 0);
   const [currentTime, setCurrentTime] = useState(track.currentTime || 0);
   const [duration, setDuration] = useState(0);
   const [bufferedEnd, setBufferedEnd] = useState(0);
@@ -99,7 +100,13 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
   };
 
   const isAudio = track.type === 'audio' || currentQuality === 'audio';
-  const streamUrl = track.streamUrl || getStreamMediaUrl(track.videoId, isAudio ? 'audio' : 'video', currentQuality);
+  const isLocal = track.videoId.startsWith('local_') || Boolean(track.streamUrl);
+  const streamUrl = track.streamUrl || getStreamMediaUrl(
+    track.videoId,
+    isAudio ? 'audio' : 'video',
+    currentQuality,
+    streamStartTime > 0 ? streamStartTime : undefined
+  );
   const thumbUrl = track.videoId.startsWith('local_')
     ? ''
     : `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg`;
@@ -131,8 +138,11 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
     if (!el) return;
     const cur = el.currentTime || 0;
     const dur = el.duration || 0;
-    setCurrentTime(cur);
-    if (dur && dur !== duration) setDuration(dur);
+    const trueTime = (isLocal || isAudio) ? cur : (streamStartTime + cur);
+    setCurrentTime(trueTime);
+    if (dur && dur !== duration) {
+      setDuration((isLocal || isAudio) ? dur : (streamStartTime + dur));
+    }
 
     const b = el.buffered;
     let end = 0;
@@ -254,8 +264,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
   };
 
   const handleExpandClick = () => {
-    const cur = mediaRef.current ? mediaRef.current.currentTime : currentTime;
-    onExpand?.(cur, currentQuality, isPlaying);
+    onExpand?.(currentTime, currentQuality, isPlaying);
   };
 
   return (
@@ -380,27 +389,27 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
                   <button
                     onClick={handlePrevTrack}
                     disabled={!canSkipPrev}
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors active:scale-90 ${
+                    className={`min-w-[40px] min-h-[40px] sm:min-w-[36px] sm:min-h-[36px] rounded-xl flex items-center justify-center transition-colors active:scale-90 ${
                       !canSkipPrev ? 'text-slate-600 cursor-not-allowed' : 'text-slate-400 hover:text-white'
                     }`}
                     title="Pista anterior"
                     aria-label="Pista anterior"
                   >
-                    <SkipBack className="w-3.5 h-3.5" />
+                    <SkipBack className="w-4 h-4" />
                   </button>
                 )}
 
                 <button
                   onClick={togglePlay}
-                  className="w-9 h-9 rounded-xl bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shadow-md active:scale-95 transition-all"
+                  className="min-w-[44px] min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shadow-md active:scale-95 transition-all"
                   title={isPlaying ? 'Pausar' : 'Reanudar'}
                 >
                   {isBuffering ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-5 h-5 animate-spin" />
                   ) : isPlaying ? (
-                    <Pause className="w-4 h-4 fill-white" />
+                    <Pause className="w-5 h-5 fill-white" />
                   ) : (
-                    <Play className="w-4 h-4 fill-white translate-x-0.5" />
+                    <Play className="w-5 h-5 fill-white translate-x-0.5" />
                   )}
                 </button>
 
@@ -409,19 +418,19 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
                   <button
                     onClick={handleNextTrack}
                     disabled={!canSkipNext}
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors active:scale-90 ${
+                    className={`min-w-[40px] min-h-[40px] sm:min-w-[36px] sm:min-h-[36px] rounded-xl flex items-center justify-center transition-colors active:scale-90 ${
                       !canSkipNext ? 'text-slate-600 cursor-not-allowed' : 'text-slate-400 hover:text-white'
                     }`}
                     title="Pista siguiente"
                     aria-label="Pista siguiente"
                   >
-                    <SkipForward className="w-3.5 h-3.5" />
+                    <SkipForward className="w-4 h-4" />
                   </button>
                 )}
 
                 <button
                   onClick={handleExpandClick}
-                  className="w-8 h-8 rounded-lg text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+                  className="min-w-[40px] min-h-[40px] sm:min-w-[36px] sm:min-h-[36px] rounded-xl text-slate-400 hover:text-white flex items-center justify-center transition-colors active:scale-90"
                   title="Expandir reproductor avanzado"
                 >
                   <Maximize2 className="w-4 h-4" />
@@ -429,7 +438,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
 
                 <button
                   onClick={onClose}
-                  className="w-8 h-8 rounded-lg text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+                  className="min-w-[40px] min-h-[40px] sm:min-w-[36px] sm:min-h-[36px] rounded-xl text-slate-400 hover:text-white flex items-center justify-center transition-colors active:scale-90"
                   title="Cerrar reproductor"
                 >
                   <X className="w-4 h-4" />

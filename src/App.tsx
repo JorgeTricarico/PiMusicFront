@@ -174,6 +174,7 @@ function AppContent() {
       quality: state.quality,
       currentTime: state.currentTime,
       isPlaying: state.isPlaying,
+      streamUrl: streamTrack?.streamUrl,
     });
   };
 
