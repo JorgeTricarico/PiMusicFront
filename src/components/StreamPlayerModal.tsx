@@ -178,6 +178,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
   const lastTapRef = useRef<{ time: number; zone: 'left' | 'right' | 'center' } | null>(null);
   const singleTapTimeoutRef = useRef<any>(null);
   const isSwipingDownRef = useRef<boolean>(false);
+  const stallWatchdogRef = useRef<any>(null);
   const [swipeOffset, setSwipeOffset] = useState<number>(0);
   const lastTouchTimeRef = useRef<number>(0);
 
@@ -378,6 +379,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       clearMediaSession();
       if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current);
       if (singleTapTimeoutRef.current) clearTimeout(singleTapTimeoutRef.current);
+      if (stallWatchdogRef.current) clearTimeout(stallWatchdogRef.current);
       if (typeof screen !== 'undefined' && screen.orientation && (screen.orientation as any).unlock) {
         try { (screen.orientation as any).unlock(); } catch {}
       }
@@ -570,9 +572,9 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     const sliceOffset = boundedTime - streamStartTime;
     let isWithinCurrentBuffer = false;
 
-    if (sliceOffset >= 0 && el.buffered && el.buffered.length > 0) {
+    if (!el.error && sliceOffset >= 0 && el.buffered && el.buffered.length > 0) {
       for (let i = 0; i < el.buffered.length; i++) {
-        if (el.buffered.start(i) <= sliceOffset && sliceOffset <= el.buffered.end(i)) {
+        if (el.buffered.start(i) <= sliceOffset && sliceOffset < el.buffered.end(i) - 0.5) {
           isWithinCurrentBuffer = true;
           break;
         }
@@ -581,19 +583,23 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
 
     if (isWithinCurrentBuffer) {
       // Salto instantáneo en el búfer ya descargado
-      el.currentTime = sliceOffset;
-      setCurrentTime(boundedTime);
-      setIsBuffering(false);
-      if (shouldResume) {
-        attemptPlay();
+      try {
+        el.currentTime = sliceOffset;
+        setCurrentTime(boundedTime);
+        setIsBuffering(false);
+        if (shouldResume) {
+          attemptPlay();
+        }
+      } catch {
+        isWithinCurrentBuffer = false;
       }
-    } else {
-      // Evitar flood si ya estamos esperando un seek out-of-buffer
-      if (isBuffering && fractionalSeekRef.current !== 0) return;
+    }
 
+    if (!isWithinCurrentBuffer) {
       // Salto fuera del búfer (adelantar a cualquier minuto o retroceder antes de streamStartTime):
       // Solicitud al servidor para iniciar streaming desde boundedTime
       setIsBuffering(true);
+      setError(null);
       setCurrentTime(boundedTime);
       setBufferedEnd(boundedTime); // Limpiar buffer visual para evitar saltos fantasma
       const newStart = Math.floor(boundedTime);
@@ -603,6 +609,24 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     }
     triggerControlsVisibility();
   };
+
+  // Función para restaurar y reconectar el stream tras corte de red o error de socket
+  const reconnectStream = useCallback((targetTime?: number) => {
+    const el = mediaRef.current;
+    const currentPos = targetTime !== undefined
+      ? targetTime
+      : (isLocal || isAudioOnly)
+        ? (el?.currentTime ?? currentTimeRef.current)
+        : (streamStartTime + (el?.currentTime ?? currentTimeRef.current ?? 0));
+
+    wasPlayingRef.current = true;
+    setIsBuffering(true);
+    setError(null);
+    const newStart = Math.floor(currentPos);
+    fractionalSeekRef.current = currentPos - newStart;
+    setStreamStartTime(newStart);
+    setSeekNonce((prev) => prev + 1);
+  }, [isLocal, isAudioOnly, streamStartTime]);
 
   // Acciones de Reanudación desde el Banner Flotante
   const handleResume = () => {
@@ -733,10 +757,12 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
           try { el.currentTime = frac; } catch {}
         }
       }
-    } else if (fractionalSeekRef.current > 0.1) {
+    } else if (fractionalSeekRef.current !== 0) {
       const frac = fractionalSeekRef.current;
       fractionalSeekRef.current = 0;
-      try { el.currentTime = frac; } catch {}
+      if (frac > 0.05) {
+        try { el.currentTime = frac; } catch {}
+      }
     }
 
     setError(null);
@@ -745,6 +771,61 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
       attemptPlay();
     }
   };
+
+  // Manejo de Buffering y Watchdog Anti-Congelamiento
+  const handleWaiting = useCallback(() => {
+    setIsBuffering(true);
+    if (stallWatchdogRef.current) clearTimeout(stallWatchdogRef.current);
+    // Si la conexión se congela silenciosamente por más de 8s (socket roto), auto-reconectar
+    stallWatchdogRef.current = setTimeout(() => {
+      const el = mediaRef.current;
+      if (el && !el.paused && !document.hidden) {
+        console.warn('Stall watchdog activado: el stream tardó más de 8s en reanudar. Reconectando...');
+        toast.info('Reconectando...', 'Restableciendo stream en vivo...', 2000);
+        reconnectStream();
+      }
+    }, 8000);
+  }, [reconnectStream, toast]);
+
+  const handlePlaying = useCallback(() => {
+    if (stallWatchdogRef.current) {
+      clearTimeout(stallWatchdogRef.current);
+      stallWatchdogRef.current = null;
+    }
+    setIsBuffering(false);
+    setIsPlaying(true);
+  }, []);
+
+  const handleMediaError = useCallback(() => {
+    if (stallWatchdogRef.current) {
+      clearTimeout(stallWatchdogRef.current);
+      stallWatchdogRef.current = null;
+    }
+    const el = mediaRef.current;
+    const errCode = el?.error?.code;
+    console.warn('Fallo en reproducción de stream en calidad:', quality, 'errCode:', errCode);
+    setIsBuffering(false);
+
+    // Auto-recuperación ante corte de red o cierre de socket por inactividad (1: ABORTED, 2: NETWORK, 3: DECODE)
+    if (errCode === 1 || errCode === 2 || errCode === 3) {
+      toast.info('Reconectando...', 'Restaurando stream tras corte de red', 2000);
+      reconnectStream();
+      return;
+    }
+
+    if (quality === '1080p') {
+      toast.info('Ajustando resolución', '1080p tardó en responder, cambiando a 720p...');
+      handleSelectQuality('720p');
+    } else if (quality === '720p') {
+      toast.info('Ajustando resolución', 'Cambiando a 480p para reproducción móvil fluida...');
+      handleSelectQuality('480p');
+    } else if (quality === '480p') {
+      toast.info('Ajustando resolución', 'Probando 360p para ahorro de datos...');
+      handleSelectQuality('360p');
+    } else {
+      setError('No se pudo reproducir este formato. Prueba cambiar a Solo Audio o descarga el video.');
+    }
+  }, [quality, reconnectStream, toast]);
 
   // Cambio de velocidad de reproducción (0.75x a 2x)
   const handlePlaybackRate = (rate: number) => {
@@ -1130,9 +1211,13 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
           }, 50);
         }
       } else {
-        // Al regresar a la app de Chrome
-        if (wasPlayingRef.current && el.paused) {
-          attemptPlay();
+        // Al regresar a la app de Chrome: verificar salud de la conexión
+        if (el.error || el.networkState === HTMLMediaElement.NETWORK_NO_SOURCE) {
+          reconnectStream();
+        } else if (wasPlayingRef.current && el.paused) {
+          attemptPlay().catch(() => {
+            reconnectStream();
+          });
         } else {
           setIsPlaying(!el.paused);
         }
@@ -1147,7 +1232,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isPlaying, isAudioOnly, isLocal, streamStartTime]);
+  }, [isPlaying, isAudioOnly, isLocal, streamStartTime, reconnectStream]);
 
   // Feedback visual de doble toque (animación fluorescente ±10s durante 600ms)
   const triggerDoubleTapFeedback = (side: 'left' | 'right') => {
@@ -1468,8 +1553,8 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
                   attemptPlay();
                 }
               }}
-              onWaiting={() => setIsBuffering(true)}
-              onPlaying={() => { setIsBuffering(false); setIsPlaying(true); }}
+              onWaiting={handleWaiting}
+              onPlaying={handlePlaying}
               onPause={() => {
                 if (document.hidden && wasPlayingRef.current) {
                   updateMediaSessionPlaybackState('playing');
@@ -1483,22 +1568,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
                 setIsPlaying(false);
               }}
               onEnded={handleMediaEnded}
-              onError={() => {
-                console.warn('Fallo en reproducción de stream en calidad:', quality);
-                setIsBuffering(false);
-                if (quality === '1080p') {
-                  toast.info('Ajustando resolución', '1080p tardó en responder, cambiando a 720p...');
-                  handleSelectQuality('720p');
-                } else if (quality === '720p') {
-                  toast.info('Ajustando resolución', 'Cambiando a 480p para reproducción móvil fluida...');
-                  handleSelectQuality('480p');
-                } else if (quality === '480p') {
-                  toast.info('Ajustando resolución', 'Probando 360p para ahorro de datos...');
-                  handleSelectQuality('360p');
-                } else {
-                  setError('No se pudo reproducir este formato. Prueba cambiar a Solo Audio o descarga el video.');
-                }
-              }}
+              onError={handleMediaError}
               className={`w-full h-full cursor-pointer touch-manipulation transition-all duration-200 ${
                 aspectRatioMode === 'cover' ? 'object-cover' : 'object-contain'
               }`}
@@ -1518,14 +1588,11 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({
                 onTimeUpdate={handleTimeUpdate}
                 onProgress={handleProgress}
                 onLoadedMetadata={handleLoadedMetadata}
-                onWaiting={() => setIsBuffering(true)}
-                onPlaying={() => { setIsBuffering(false); setIsPlaying(true); }}
+                onWaiting={handleWaiting}
+                onPlaying={handlePlaying}
                 onPause={() => setIsPlaying(false)}
                 onEnded={handleMediaEnded}
-                onError={() => {
-                  setError('Error de audio stream. Verifica la conexión.');
-                  setIsBuffering(false);
-                }}
+                onError={handleMediaError}
               />
               <div className="relative w-28 h-28 sm:w-36 sm:h-36 rounded-2xl overflow-hidden shadow-2xl border border-slate-700/80 mb-4">
                 {thumbUrl ? (
